@@ -224,6 +224,123 @@ impl CPU {
         self.status &= 0b1111_1110;
     }
 
+    // SED (set decimal flag)
+    fn sed(&mut self) {
+        self.status |= 0b0000_1000;
+    }
+
+    // CLD (clear decimal flag)
+    fn cld(&mut self) {
+        self.status &= 0b1111_0111;
+    }
+
+    // SEI (set interrupt disable flag)
+    fn sei(&mut self) {
+        self.status |= 0b0000_0100;
+    }
+
+    // CLI (clear interrupt disable flag)
+    fn cli(&mut self) {
+        self.status &= 0b1111_1011;
+    }
+
+    // CLV (clear overflow flag)
+    fn clv(&mut self) {
+        self.status &= 0b1011_1111;
+    }
+
+    // AND (perform a logical AND on register A)
+    fn and(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        self.register_a &= value;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
+    // ORA (perform a logical OR on register A)
+    fn ora(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        self.register_a |= value;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
+    // EOR (perform a logical XOR on register A)
+    fn eor(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        self.register_a ^= value;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
+    // CMP (compare register A with memory)
+    fn cmp(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        let result = self.register_a.wrapping_sub(value);
+        self.update_zero_and_negative_flags(result);
+        if self.register_a >= value {
+            self.status |= 0b0000_0001;
+        } else {
+            self.status &= 0b1111_1110;
+        }
+    }
+
+    // ADC (add to register A with carry-in)
+    fn adc(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+        let carry = self.status & 0b0000_0001;
+        let result_u16 = self.register_a as u16 + value as u16 + carry as u16;
+
+        if result_u16 > 0xFF {
+            self.status |= 0b0000_0001;
+        } else {
+            self.status &= 0b1111_1110;
+        }
+
+        let result_u8 = (result_u16 & 0xFF) as u8;
+        let v = ((self.register_a ^ result_u8) & (value ^ result_u8) & 0x80) != 0;
+        if v {
+            self.status |= 0b0100_0000;
+        } else {
+            self.status &= 0b1011_1111;
+        }
+
+        self.register_a = result_u8;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
+    // SBC (substract from register A with borrow-in)
+    fn sbc(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+        let carry = self.status & 0b0000_0001;
+        let inv_value = value ^ 0xFF;
+        let result_u16 = self.register_a as u16 + inv_value as u16 + carry as u16;
+
+        if result_u16 > 0xFF {
+            self.status |= 0b0000_0001;
+        } else {
+            self.status &= 0b1111_1110;
+        }
+
+        let result_u8 = (result_u16 & 0xFF) as u8;
+        let v = ((self.register_a ^ result_u8) & (inv_value ^ result_u8) & 0x80) != 0;
+        if v {
+            self.status |= 0b0100_0000;
+        } else {
+            self.status &= 0b1011_1111;
+        }
+
+        self.register_a = result_u8;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
     fn update_zero_and_negative_flags(&mut self, result: u8) {
         if result == 0 {
             self.status |= 0b0000_0010; // Set Z flag (last result was 0)
@@ -269,7 +386,7 @@ impl CPU {
 
             let opcode = opcodes
                 .get(&code)
-                .expect(&format!("OpCode {:x} is not recognized", code));
+                .expect(&format!("OpCode 0x{:02x} is not recognized", code));
 
             match code {
                 // LDA (load to register A)
@@ -302,6 +419,36 @@ impl CPU {
                     self.sty(&opcode.mode);
                 }
 
+                // AND (perform a logical AND on register A)
+                0x29 | 0x25 | 0x35 | 0x2d | 0x3d | 0x39 | 0x21 | 0x31 => {
+                    self.and(&opcode.mode);
+                }
+
+                // ORA (perform a logical OR on register A)
+                0x09 | 0x05 | 0x15 | 0x0d | 0x1d | 0x19 | 0x01 | 0x11 => {
+                    self.ora(&opcode.mode);
+                }
+
+                // EOR (perform a logical XOR on register A)
+                0x49 | 0x45 | 0x55 | 0x4d | 0x5d | 0x59 | 0x41 | 0x51 => {
+                    self.eor(&opcode.mode);
+                }
+
+                // CMP (compare register A with memory)
+                0xc9 | 0xc5 | 0xd5 | 0xcd | 0xdd | 0xd9 | 0xc1 | 0xd1 => {
+                    self.cmp(&opcode.mode);
+                }
+
+                // ADC (add to register A with carry-in)
+                0x69 | 0x65 | 0x75 | 0x6d | 0x7d | 0x79 | 0x61 | 0x71 => {
+                    self.adc(&opcode.mode);
+                }
+
+                // SBC (substract from register A with borrow-in)
+                0xe9 | 0xe5 | 0xf5 | 0xed | 0xfd | 0xf9 | 0xe1 | 0xf1 => {
+                    self.sbc(&opcode.mode);
+                }
+
                 0xaa => self.tax(), // TAX (transfer register A to register X)
                 0x8a => self.txa(), // TXA (transfer register X to register A)
                 0xa8 => self.tay(), // TAY (transfer register A to register Y)
@@ -312,6 +459,11 @@ impl CPU {
                 0x88 => self.dey(), // DEY (decrement register Y)
                 0x38 => self.sec(), // SEC (set carry flag)
                 0x18 => self.clc(), // CLC (clear carry flag)
+                0xf8 => self.sed(), // SED (set decimal flag)
+                0xd8 => self.cld(), // CLD (clear decimal flag)
+                0x78 => self.sei(), // SEI (set interrupt disable flag)
+                0x58 => self.cli(), // CLI (clear interrupt disable flag)
+                0xb8 => self.clv(), // CLV (clear overflow flag)
                 0xea => {}          // NOP (do nothing, only increment program counter)
                 0x00 => return,     // BRK (stop execution)
                 _ => unimplemented!(
@@ -588,6 +740,312 @@ mod test {
             "Z flag should be set when AND result is 0"
         );
         assert_eq!(cpu.status & 0b1000_0000, 0, "N flag should be clear");
+    }
+
+    // ----- CMP -----
+
+    #[test]
+    fn test_cmp_equal_sets_z_and_c() {
+        let mut cpu = CPU::new();
+        // LDA #$05; CMP #$05 -> A - M = 0, so Z=1, C=1 (A >= M).
+        // Register A must be unchanged (CMP is a side-effect-free comparison).
+        cpu.load_and_run(vec![0xa9, 0x05, 0xc9, 0x05, 0x00]);
+        assert_eq!(cpu.register_a, 0x05, "CMP must not modify A");
+        assert_eq!(
+            cpu.status & 0b0000_0011,
+            0b0000_0011,
+            "Z and C flags should both be set when A == M"
+        );
+        assert_eq!(cpu.status & 0b1000_0000, 0, "N flag should be clear");
+    }
+
+    #[test]
+    fn test_cmp_less_than_with_carry_set_clears_c() {
+        let mut cpu = CPU::new();
+        // SEC first so C starts at 1: a buggy CMP that fails to update C
+        // (or sets it backwards) would fail the final C==0 assertion.
+        // Then LDA #$00; CMP #$01 -> 0 - 1 = 0xFF (borrow), so C=0, Z=0, N=1.
+        cpu.load_and_run(vec![0x38, 0xa9, 0x00, 0xc9, 0x01, 0x00]);
+        assert_eq!(cpu.register_a, 0x00, "CMP must not modify A");
+        assert_eq!(
+            cpu.status & 0b0000_0001,
+            0,
+            "C flag should be clear when A < M"
+        );
+        assert_eq!(cpu.status & 0b0000_0010, 0, "Z flag should be clear");
+        assert_eq!(
+            cpu.status & 0b1000_0000,
+            0b1000_0000,
+            "N flag should be set (result 0xFF has high bit)"
+        );
+    }
+
+    // ----- ADC -----
+
+    // Status bit positions used by the ADC tests:
+    //   C = bit 0 (0b0000_0001) -- carry out of bit 7 (unsigned overflow)
+    //   Z = bit 1 (0b0000_0010) -- result is zero
+    //   V = bit 6 (0b0100_0000) -- signed overflow
+    //   N = bit 7 (0b1000_0000) -- bit 7 of result
+
+    #[test]
+    fn test_adc_basic_add_no_carry_in() {
+        let mut cpu = CPU::new();
+        // C starts at 0 after reset. 5 + 3 = 8, no overflow anywhere.
+        cpu.load_and_run(vec![0xa9, 0x05, 0x69, 0x03, 0x00]);
+        assert_eq!(cpu.register_a, 0x08);
+        assert_eq!(cpu.status & 0b0000_0001, 0, "C should be clear");
+        assert_eq!(cpu.status & 0b0000_0010, 0, "Z should be clear");
+        assert_eq!(cpu.status & 0b0100_0000, 0, "V should be clear");
+        assert_eq!(cpu.status & 0b1000_0000, 0, "N should be clear");
+    }
+
+    #[test]
+    fn test_adc_adds_carry_in() {
+        let mut cpu = CPU::new();
+        // SEC; LDA #$05; ADC #$03 -> 5 + 3 + 1 = 9.
+        // A buggy ADC that ignored the carry-in would produce 8, not 9.
+        cpu.load_and_run(vec![0x38, 0xa9, 0x05, 0x69, 0x03, 0x00]);
+        assert_eq!(cpu.register_a, 0x09, "carry-in must be added");
+        assert_eq!(cpu.status & 0b0000_0001, 0, "C should be clear");
+        assert_eq!(cpu.status & 0b0100_0000, 0, "V should be clear");
+    }
+
+    #[test]
+    fn test_adc_carry_out_sets_c_and_zero_result_sets_z() {
+        let mut cpu = CPU::new();
+        // LDA #$FF; ADC #$01 -> 0xFF + 0x01 = 0x100, so A=0x00, C=1, Z=1.
+        cpu.load_and_run(vec![0xa9, 0xff, 0x69, 0x01, 0x00]);
+        assert_eq!(cpu.register_a, 0x00);
+        assert_eq!(
+            cpu.status & 0b0000_0001,
+            0b0000_0001,
+            "C should be set on unsigned overflow"
+        );
+        assert_eq!(
+            cpu.status & 0b0000_0010,
+            0b0000_0010,
+            "Z should be set when result is 0"
+        );
+        assert_eq!(
+            cpu.status & 0b0100_0000,
+            0,
+            "V should be clear (no signed overflow)"
+        );
+    }
+
+    #[test]
+    fn test_adc_signed_overflow_sets_v() {
+        let mut cpu = CPU::new();
+        // LDA #$50; ADC #$50 -> 0x50 + 0x50 = 0xA0.
+        // In signed: (+80) + (+80) = (-96) is an overflow, so V must be set.
+        // 0xA0 also has bit 7 set, so N must be set.
+        cpu.load_and_run(vec![0xa9, 0x50, 0x69, 0x50, 0x00]);
+        assert_eq!(cpu.register_a, 0xa0);
+        assert_eq!(
+            cpu.status & 0b0100_0000,
+            0b0100_0000,
+            "V should be set on signed overflow"
+        );
+        assert_eq!(
+            cpu.status & 0b1000_0000,
+            0b1000_0000,
+            "N should be set (result 0xA0 has high bit)"
+        );
+        assert_eq!(cpu.status & 0b0000_0001, 0, "C should be clear");
+        assert_eq!(cpu.status & 0b0000_0010, 0, "Z should be clear");
+    }
+
+    // ----- SBC -----
+
+    // SBC semantics: A = A - M - !C. C acts as "no borrow" (inverted from what
+    // you might expect); C_in=1 means no borrow coming in, so the full
+    // subtraction happens. After the operation, C=1 means no borrow occurred.
+    //
+    // Status bit positions:
+    //   C = bit 0 (0b0000_0001) -- set if no borrow (analogous to ADC's carry-out)
+    //   Z = bit 1 (0b0000_0010) -- result is zero
+    //   V = bit 6 (0b0100_0000) -- signed overflow on subtraction
+    //   N = bit 7 (0b1000_0000) -- bit 7 of result
+
+    #[test]
+    fn test_sbc_basic_subtract_no_borrow_in() {
+        let mut cpu = CPU::new();
+        // SEC; LDA #$05; SBC #$03 -> 5 - 3 - 0 = 2, no borrow anywhere.
+        cpu.load_and_run(vec![0x38, 0xa9, 0x05, 0xe9, 0x03, 0x00]);
+        assert_eq!(cpu.register_a, 0x02);
+        assert_eq!(
+            cpu.status & 0b0000_0001,
+            0b0000_0001,
+            "C should be set (no borrow)"
+        );
+        assert_eq!(cpu.status & 0b0000_0010, 0, "Z should be clear");
+        assert_eq!(cpu.status & 0b0100_0000, 0, "V should be clear");
+        assert_eq!(cpu.status & 0b1000_0000, 0, "N should be clear");
+    }
+
+    #[test]
+    fn test_sbc_subtracts_borrow_in() {
+        let mut cpu = CPU::new();
+        // CLC; LDA #$05; SBC #$03 -> 5 - 3 - 1 = 1.
+        // A buggy SBC that ignored the carry-in would produce 2, not 1.
+        cpu.load_and_run(vec![0x18, 0xa9, 0x05, 0xe9, 0x03, 0x00]);
+        assert_eq!(cpu.register_a, 0x01, "borrow-in must be subtracted");
+        assert_eq!(
+            cpu.status & 0b0000_0001,
+            0b0000_0001,
+            "C should be set (no borrow)"
+        );
+        assert_eq!(cpu.status & 0b0100_0000, 0, "V should be clear");
+    }
+
+    #[test]
+    fn test_sbc_underflow_clears_c_and_sets_n() {
+        let mut cpu = CPU::new();
+        // SEC; LDA #$00; SBC #$01 -> 0 - 1 - 0 = 0xFF (borrow occurred).
+        // V should be clear: 0 - 1 = -1, which is valid in signed 8-bit.
+        cpu.load_and_run(vec![0x38, 0xa9, 0x00, 0xe9, 0x01, 0x00]);
+        assert_eq!(cpu.register_a, 0xff);
+        assert_eq!(
+            cpu.status & 0b0000_0001,
+            0,
+            "C should be clear (borrow occurred)"
+        );
+        assert_eq!(cpu.status & 0b0000_0010, 0, "Z should be clear");
+        assert_eq!(cpu.status & 0b0100_0000, 0, "V should be clear");
+        assert_eq!(
+            cpu.status & 0b1000_0000,
+            0b1000_0000,
+            "N should be set (result 0xFF has high bit)"
+        );
+    }
+
+    #[test]
+    fn test_sbc_signed_overflow_sets_v() {
+        let mut cpu = CPU::new();
+        // SEC; LDA #$80; SBC #$01 -> 0x80 - 0x01 - 0 = 0x7F.
+        // In signed: (-128) - (+1) = -129, which doesn't fit in 8-bit signed,
+        // so signed overflow occurred and V must be set.
+        // 0x7F has bit 7 clear, so N must be clear.
+        cpu.load_and_run(vec![0x38, 0xa9, 0x80, 0xe9, 0x01, 0x00]);
+        assert_eq!(cpu.register_a, 0x7f);
+        assert_eq!(
+            cpu.status & 0b0100_0000,
+            0b0100_0000,
+            "V should be set on signed overflow"
+        );
+        assert_eq!(cpu.status & 0b1000_0000, 0, "N should be clear");
+        assert_eq!(
+            cpu.status & 0b0000_0001,
+            0b0000_0001,
+            "C should be set (no borrow)"
+        );
+        assert_eq!(cpu.status & 0b0000_0010, 0, "Z should be clear");
+    }
+
+    // ----- ORA -----
+
+    #[test]
+    fn test_ora_immediate() {
+        let mut cpu = CPU::new();
+        // LDA #$AA; ORA #$55 -> 0xAA | 0x55 = 0xFF, N flag set, Z flag clear.
+        // Like AND, this is a direct-mirror pattern: read operand from memory
+        // via get_operand_address, OR with A, update flags.
+        cpu.load_and_run(vec![0xa9, 0xaa, 0x09, 0x55, 0x00]);
+        assert_eq!(cpu.register_a, 0xff);
+        assert_eq!(
+            cpu.status & 0b1000_0000,
+            0b1000_0000,
+            "N flag should be set"
+        );
+        assert_eq!(cpu.status & 0b0000_0010, 0, "Z flag should be clear");
+    }
+
+    // ----- EOR -----
+
+    #[test]
+    fn test_eor_immediate() {
+        let mut cpu = CPU::new();
+        // LDA #$AA; EOR #$FE -> 0xAA ^ 0xFE = 0x54.
+        // Picked so the result differs from OR (0xFE) and AND (0xAA),
+        // proving XOR is wired and not accidentally aliased to another op.
+        cpu.load_and_run(vec![0xa9, 0xaa, 0x49, 0xfe, 0x00]);
+        assert_eq!(cpu.register_a, 0x54);
+        assert_eq!(cpu.status & 0b1000_0000, 0, "N flag should be clear");
+        assert_eq!(cpu.status & 0b0000_0010, 0, "Z flag should be clear");
+    }
+
+    // ----- CLD & SED (Decimal flag) -----
+
+    // Decimal flag (D) is bit 3 of the status register (0b0000_1000).
+    // On the NES's 2A03 CPU the D flag is vestigial (decimal mode is disabled
+    // in hardware), but software still uses CLD/SED to save/restore state.
+    // The flag must still be read/writable at the status-register level.
+
+    #[test]
+    fn test_sed_sets_decimal_flag() {
+        let mut cpu = CPU::new();
+        cpu.load_and_run(vec![0xf8, 0x00]);
+        assert_eq!(
+            cpu.status & 0b0000_1000,
+            0b0000_1000,
+            "D flag should be set"
+        );
+    }
+
+    #[test]
+    fn test_cld_clears_decimal_flag() {
+        let mut cpu = CPU::new();
+        // SED; CLD — exercises both the set and the clear transition.
+        cpu.load_and_run(vec![0xf8, 0xd8, 0x00]);
+        assert_eq!(cpu.status & 0b0000_1000, 0, "D flag should be clear");
+    }
+
+    // ----- CLI & SEI (Interrupt disable flag) -----
+
+    // Interrupt disable flag (I) is bit 2 of the status register (0b0000_0100).
+    // When I=1 the CPU ignores maskable interrupts (IRQ).
+    // Currently unused by the emulator but a prerequisite for BRK/IRQ handling.
+
+    #[test]
+    fn test_sei_sets_interrupt_flag() {
+        let mut cpu = CPU::new();
+        cpu.load_and_run(vec![0x78, 0x00]);
+        assert_eq!(
+            cpu.status & 0b0000_0100,
+            0b0000_0100,
+            "I flag should be set"
+        );
+    }
+
+    #[test]
+    fn test_cli_clears_interrupt_flag() {
+        let mut cpu = CPU::new();
+        // SEI; CLI — exercises both transitions.
+        cpu.load_and_run(vec![0x78, 0x58, 0x00]);
+        assert_eq!(cpu.status & 0b0000_0100, 0, "I flag should be clear");
+    }
+
+    // ----- CLV (Overflow flag) -----
+
+    // Overflow flag (V) is bit 6 of the status register (0b0100_0000).
+    // CLV is the only "clear-only" flag instruction — there is no SEV.
+    // To verify CLV works, we first need V=1, which we get from ADC overflow.
+
+    #[test]
+    fn test_clv_clears_overflow_flag() {
+        let mut cpu = CPU::new();
+        // LDA #$50; ADC #$50 -> V=1 (signed overflow), then CLV -> V=0.
+        // N and Z should be unchanged by CLV (proving it's not a sledgehammer
+        // that clears the whole status register).
+        cpu.load_and_run(vec![0xa9, 0x50, 0x69, 0x50, 0xb8, 0x00]);
+        assert_eq!(cpu.status & 0b0100_0000, 0, "V flag should be clear");
+        assert_eq!(
+            cpu.status & 0b1000_0000,
+            0b1000_0000,
+            "N flag should survive CLV"
+        );
+        assert_eq!(cpu.status & 0b0000_0010, 0, "Z flag should survive CLV");
     }
 
     // ----- Register transfers & increments -----

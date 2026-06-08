@@ -112,6 +112,81 @@ This is the first instruction that does real data manipulation (A = A & M). All 
 |------|---------|
 | `test_and_immediate` | `LDA #$AA; AND #$55` → result `0x00`, Z flag set. Picked a non-zero-zero input pair that produces a *zero* result so the test simultaneously exercises the wiring, the bitwise AND, and the Z-flag transition (a buggy AND that forgets to call `update_zero_and_negative_flags` would fail). All other addressing modes are already covered by LDA tests through the shared `get_operand_address` resolver. |
 
+### CMP
+
+CMP introduces reading the **Carry flag as a result** (in addition to setting Z/N). Since three distinct outcomes (A==M, A>M, A<M) each set a unique combination of C and Z, this needs more than one test to cover the new flag transitions. All addressing modes are still shared with LDA, so we don't repeat those tests.
+
+| Test | Purpose |
+|---|---|
+| `test_cmp_equal_sets_z_and_c` | `LDA #$05; CMP #$05` → A unchanged, Z=1, C=1, N=0. Verifies the equal case and that A is preserved (CMP must not write back to A). |
+| `test_cmp_less_than_with_carry_set_clears_c` | `SEC; LDA #$00; CMP #$01` → A unchanged, C=0, Z=0, N=1. The `SEC` before CMP is critical: it seeds C=1 so a buggy CMP that forgets to clear C would fail the final `C==0` assertion (catch the "CMP doesn't write C" bug). Verifies the A<M case. |
+
+### ADC
+
+The first "big" instruction: A = A + M + C, affecting **all four** of C, Z, V, and N. The V (signed overflow) flag is the trickiest part of the 6502 to emulate, so it needs explicit coverage. Carry-in is also new — it's the first instruction that *reads* the C flag, so a buggy ADC that ignores C-in will pass any test where C happens to be 0.
+
+| Test | Purpose |
+|---|---|
+| `test_adc_basic_add_no_carry_in` | `LDA #$05; ADC #$03` → A=8, C=0, Z=0, V=0, N=0. The "happy path" baseline. C starts at 0 after reset, so this test only checks that plain 8-bit addition works and the four flags default to clear. |
+| `test_adc_adds_carry_in` | `SEC; LDA #$05; ADC #$03` → A=9. Catches the "ADC ignored the carry-in" bug class: a buggy implementation that doesn't read `status & 0x01` would produce 8, not 9. |
+| `test_adc_carry_out_sets_c_and_zero_result_sets_z` | `LDA #$FF; ADC #$01` → A=0, C=1, Z=1. Exercises unsigned overflow (C=1) and zero result (Z=1) in the same operation, plus confirms V=0 (no signed overflow for this input pair). |
+| `test_adc_signed_overflow_sets_v` | `LDA #$50; ADC #$50` → A=0xA0, V=1, N=1, C=0, Z=0. The classic 6502 V-flag test: (+80) + (+80) = 0xA0, which is −96 in signed, so signed overflow occurred and V must be set. Result also has bit 7 set (N=1). This is the test that catches an incorrect V formula (e.g. one that tests bit 6 carry without XOR-ing bit 7 carry). |
+
+### SBC
+
+Subtraction counterpart to ADC. Semantics: A = A − M − !C. Note that C is **inverted** — C=1 means "no borrow". This is the first instruction that affects all four of C, Z, V, N like ADC does, but the borrow-in is the conceptually tricky part.
+
+The V formula for subtraction is different from ADC: it uses `((A ^ M) & (A ^ R) & 0x80) != 0` rather than `((A ^ R) & (M ^ R) & 0x80) != 0`. Both detect signed overflow but from different angles (ADC's checks the sign of both inputs changed; SBC's checks the sign of A and the result differ while A and M had different signs).
+
+| Test | Purpose |
+|---|---|
+| `test_sbc_basic_subtract_no_borrow_in` | `SEC; LDA #$05; SBC #$03` → A=2, C=1, Z=0, V=0, N=0. The "happy path": C=1 pre-loaded (no borrow coming in), plain 8-bit subtraction, no overflow anywhere. |
+| `test_sbc_subtracts_borrow_in` | `CLC; LDA #$05; SBC #$03` → A=1, C=1. Catches the "SBC ignored the carry-in" bug class: a buggy SBC that doesn't subtract `!C` would produce 2, not 1. |
+| `test_sbc_underflow_clears_c_and_sets_n` | `SEC; LDA #$00; SBC #$01` → A=0xFF, C=0, Z=0, V=0, N=1. Exercises borrow-out (C=0) and a negative result (N=1). V=0 because 0−1 = −1 is a valid signed 8-bit value. |
+| `test_sbc_signed_overflow_sets_v` | `SEC; LDA #$80; SBC #$01` → A=0x7F, V=1, C=1, Z=0, N=0. In signed: (−128) − (+1) = −129, which doesn't fit in 8-bit signed, so V must be set. Catches an incorrect V formula for subtraction. |
+
+### ORA
+
+Bitwise OR, structural mirror of AND. All 8 addressing modes are reused from LDA/AND, and flag handling is the same `update_zero_and_negative_flags` helper.
+
+| Test | Purpose |
+|---|---|
+| `test_ora_immediate` | `LDA #$AA; ORA #$55` → A=0xFF, N=1, Z=0. Pairs complementing inputs so every bit is exercised (10101010 | 01010101 = 11111111). A bug that ORed with 0 or wrote back to the wrong register would produce A != 0xFF. |
+
+### EOR
+
+Bitwise XOR, structural mirror of AND/ORA. Completes the logical triplet.
+
+| Test | Purpose |
+|---|---|
+| `test_eor_immediate` | `LDA #$AA; EOR #$FE` → A=0x54. The result is distinct from ORA (0xFE) and AND (0xAA) for the same inputs, proving EOR is wired correctly and not accidentally aliased to another logical op. |
+
+### CLD & SED (Decimal flag)
+
+Decimal mode (D, bit 3) is vestigial on the NES's 2A03 CPU — the hardware ignores it during ADC/SBC — but `CLD`/`SED` instructions still set and clear the flag at the status-register level. Software relies on reading/writing D for state preservation.
+
+| Test | Purpose |
+|---|---|
+| `test_sed_sets_decimal_flag` | D starts at 0 after reset; `SED` must set bit 3. |
+| `test_cld_clears_decimal_flag` | `SED; CLD` exercises both transitions; final assertion is D=0. |
+
+### CLI & SEI (Interrupt disable flag)
+
+The I flag (bit 2, `0b0000_0100`) controls whether maskable IRQs are acknowledged. Currently unused by the emulator (no IRQ hardware exists yet), but `CLI`/`SEI` appear in almost all real NES code and must be emulated at the status-register level.
+
+| Test | Purpose |
+|---|---|
+| `test_sei_sets_interrupt_flag` | I starts at 0 after reset; `SEI` must set bit 2. |
+| `test_cli_clears_interrupt_flag` | `SEI; CLI` exercises both transitions; final assertion is I=0. |
+
+### CLV (Overflow flag)
+
+CLV is unique among the flag setters — there's no `SEV` to pair with it. The V flag (bit 6) is normally set by arithmetic (`ADC`/`SBC` overflow) or by `BIT`. To test CLV we borrow ADC's V-output to seed `V=1` first.
+
+| Test | Purpose |
+|---|---|
+| `test_clv_clears_overflow_flag` | `LDA #$50; ADC #$50` sets V=1 via signed overflow, then `CLV` clears it. Also asserts that N and Z (set by the ADC) survive CLV intact, proving CLV is not accidentally clearing the entire status byte. |
+
 ### Register transfers & increments
 
 | Test | Purpose |
