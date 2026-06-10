@@ -149,173 +149,181 @@ impl CPU {
         }
     }
 
-    // LDA (load to register A)
-    fn lda(&mut self, mode: &AddressingMode) {
-        let addr = self.get_operand_address(mode);
-        let value = self.mem_read(addr);
+    /// Update zero and negative flags of the status register
+    fn update_zero_and_negative_flags(&mut self, result: u8) {
+        // Set Z flag if result was zero
+        self.status.set(CPUFlags::ZERO, result == 0);
 
+        // First byte of result is set -> result is negative
+        self.status
+            .set(CPUFlags::NEGATIVE, result & 0b1000_0000 != 0);
+    }
+
+    /// Sets the register A of this [`CPU`] and updates status flags
+    fn set_register_a(&mut self, value: u8) {
         self.register_a = value;
         self.update_zero_and_negative_flags(self.register_a);
     }
 
-    // LDX (load to register X)
-    fn ldx(&mut self, mode: &AddressingMode) {
-        let addr = self.get_operand_address(mode);
-        let value = self.mem_read(addr);
-
+    /// Sets the register X of this [`CPU`] and updates status flags
+    fn set_register_x(&mut self, value: u8) {
         self.register_x = value;
         self.update_zero_and_negative_flags(self.register_x);
     }
 
-    // LDY (load to register Y)
-    fn ldy(&mut self, mode: &AddressingMode) {
-        let addr = self.get_operand_address(mode);
-        let value = self.mem_read(addr);
-
+    /// Sets the register Y of this [`CPU`] and updates status flags
+    fn set_register_y(&mut self, value: u8) {
         self.register_y = value;
         self.update_zero_and_negative_flags(self.register_y);
     }
 
-    // STA (store register A in memory)
+    /// LDA (load to register A)
+    fn lda(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+        self.set_register_a(value);
+    }
+
+    /// LDX (load to register X)
+    fn ldx(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+        self.set_register_x(value);
+    }
+
+    /// LDY (load to register Y)
+    fn ldy(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+        self.set_register_y(value);
+    }
+
+    /// STA (store register A in memory)
     fn sta(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         self.mem_write(addr, self.register_a);
     }
 
-    // STX (store register X in memory)
+    /// STX (store register X in memory)
     fn stx(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         self.mem_write(addr, self.register_x);
     }
 
-    // STY (store register Y in memory)
+    /// STY (store register Y in memory)
     fn sty(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         self.mem_write(addr, self.register_y);
     }
 
-    // TAX (transfer A to X)
+    /// TAX (transfer A to X)
     fn tax(&mut self) {
-        self.register_x = self.register_a;
-        self.update_zero_and_negative_flags(self.register_x);
+        self.set_register_x(self.register_a);
     }
 
-    // TXA (transfer X to A)
+    /// TXA (transfer X to A)
     fn txa(&mut self) {
-        self.register_a = self.register_x;
-        self.update_zero_and_negative_flags(self.register_a);
+        self.set_register_a(self.register_x);
     }
 
-    // TAY (transfer A to Y)
+    /// TAY (transfer A to Y)
     fn tay(&mut self) {
-        self.register_y = self.register_a;
-        self.update_zero_and_negative_flags(self.register_y);
+        self.set_register_y(self.register_a);
     }
 
-    // TYA (transfer register Y to register A)
+    /// TYA (transfer register Y to register A)
     fn tya(&mut self) {
-        self.register_a = self.register_y;
-        self.update_zero_and_negative_flags(self.register_a);
+        self.set_register_a(self.register_y);
     }
 
-    // INX (increment X)
+    /// INX (increment X)
     fn inx(&mut self) {
-        self.register_x = self.register_x.wrapping_add(1);
-        self.update_zero_and_negative_flags(self.register_x);
+        self.set_register_x(self.register_x.wrapping_add(1));
     }
 
-    // DEX (decrement register X)
+    /// DEX (decrement register X)
     fn dex(&mut self) {
-        self.register_x = self.register_x.wrapping_sub(1);
-        self.update_zero_and_negative_flags(self.register_x);
+        self.set_register_x(self.register_x.wrapping_sub(1));
     }
 
-    // INY (increment Y)
+    /// INY (increment Y)
     fn iny(&mut self) {
-        self.register_y = self.register_y.wrapping_add(1);
-        self.update_zero_and_negative_flags(self.register_y);
+        self.set_register_y(self.register_y.wrapping_add(1));
     }
 
-    // DEY (decrement register Y)
+    /// DEY (decrement register Y)
     fn dey(&mut self) {
-        self.register_y = self.register_y.wrapping_sub(1);
-        self.update_zero_and_negative_flags(self.register_y);
+        self.set_register_y(self.register_y.wrapping_sub(1));
     }
 
-    // SEC (set carry flag)
+    /// SEC (set carry flag)
     fn sec(&mut self) {
         self.status.insert(CPUFlags::CARRY);
     }
 
-    // CLC (clear carry flag)
+    /// CLC (clear carry flag)
     fn clc(&mut self) {
         self.status.remove(CPUFlags::CARRY);
     }
 
-    // SED (set decimal flag)
+    /// SED (set decimal flag)
     fn sed(&mut self) {
         self.status.insert(CPUFlags::DECIMAL_MODE);
     }
 
-    // CLD (clear decimal flag)
+    /// CLD (clear decimal flag)
     fn cld(&mut self) {
         self.status.remove(CPUFlags::DECIMAL_MODE);
     }
 
-    // SEI (set interrupt disable flag)
+    /// SEI (set interrupt disable flag)
     fn sei(&mut self) {
         self.status.insert(CPUFlags::INTERRUPT_DISABLE);
     }
 
-    // CLI (clear interrupt disable flag)
+    /// CLI (clear interrupt disable flag)
     fn cli(&mut self) {
         self.status.remove(CPUFlags::INTERRUPT_DISABLE);
     }
 
-    // CLV (clear overflow flag)
+    /// CLV (clear overflow flag)
     fn clv(&mut self) {
         self.status.remove(CPUFlags::OVERFLOW);
     }
 
-    // AND (perform a logical AND on register A)
+    /// AND (perform a logical AND on register A)
     fn and(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
-
-        self.register_a &= value;
-        self.update_zero_and_negative_flags(self.register_a);
+        self.set_register_a(self.register_a & value);
     }
 
-    // ORA (perform a logical OR on register A)
+    /// ORA (perform a logical OR on register A)
     fn ora(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
-
-        self.register_a |= value;
-        self.update_zero_and_negative_flags(self.register_a);
+        self.set_register_a(self.register_a | value);
     }
 
-    // EOR (perform a logical XOR on register A)
+    /// EOR (perform a logical XOR on register A)
     fn eor(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
-
-        self.register_a ^= value;
-        self.update_zero_and_negative_flags(self.register_a);
+        self.set_register_a(self.register_a ^ value);
     }
 
-    // CMP (compare register A with memory)
+    /// CMP (compare register A with memory)
     fn cmp(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
 
         let result = self.register_a.wrapping_sub(value);
         self.update_zero_and_negative_flags(result);
-        self.status.set(CPUFlags::CARRY, self.register_a >= value); // Set C flag when register A
-        // was bigger than value
+        // Set C flag when register A was bigger than value
+        self.status.set(CPUFlags::CARRY, self.register_a >= value);
     }
 
-    // ADC (add to register A with carry-in)
+    /// ADC (add to register A with carry-in)
     fn adc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
@@ -328,11 +336,10 @@ impl CPU {
         let v = ((self.register_a ^ result_u8) & (value ^ result_u8) & 0x80) != 0;
         self.status.set(CPUFlags::OVERFLOW, v); // Set V flag if signed result overflowed
 
-        self.register_a = result_u8;
-        self.update_zero_and_negative_flags(self.register_a);
+        self.set_register_a(result_u8);
     }
 
-    // SBC (substract from register A with borrow-in)
+    /// SBC (substract from register A with borrow-in)
     fn sbc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
@@ -340,37 +347,13 @@ impl CPU {
         let inv_value = value ^ 0xFF;
         let result_u16 = self.register_a as u16 + inv_value as u16 + carry;
 
-        if result_u16 > 0xFF {
-            self.status.insert(CPUFlags::CARRY); // Set C flag (result doesn't fit in 8-bit)
-        } else {
-            self.status.remove(CPUFlags::CARRY); // Unset C flag (result fits in 8-bit)
-        }
+        self.status.set(CPUFlags::CARRY, result_u16 > 0xFF); // Set C flag if result has a carry-out
 
         let result_u8 = (result_u16 & 0xFF) as u8;
         let v = ((self.register_a ^ result_u8) & (inv_value ^ result_u8) & 0x80) != 0;
-        if v {
-            self.status.insert(CPUFlags::OVERFLOW); // Set V flag (signed result overflowed)
-        } else {
-            self.status.remove(CPUFlags::OVERFLOW); // Unset V flag (signed result didn't overflow)
-        }
+        self.status.set(CPUFlags::OVERFLOW, v); // Set V flag if signed result overflowed
 
-        self.register_a = result_u8;
-        self.update_zero_and_negative_flags(self.register_a);
-    }
-
-    fn update_zero_and_negative_flags(&mut self, result: u8) {
-        if result == 0 {
-            self.status.insert(CPUFlags::ZERO); // Set Z flag (last result was 0)
-        } else {
-            self.status.remove(CPUFlags::ZERO); // Unset Z flag (last result wasn't 0)
-        }
-
-        // First byte of result is set -> result is negative
-        if result & 0b1000_0000 != 0 {
-            self.status.insert(CPUFlags::NEGATIVE); // Set N flag (last result was negative)
-        } else {
-            self.status.remove(CPUFlags::NEGATIVE); // Unset N flag (last result was positive)
-        }
+        self.set_register_a(result_u8);
     }
 
     pub fn load_and_run(&mut self, program: Vec<u8>) {
