@@ -177,6 +177,20 @@ impl CPU {
         self.update_zero_and_negative_flags(self.register_y);
     }
 
+    /// Helper function to perform an addition on register A
+    fn add_to_register_a(&mut self, value: u8) {
+        let carry = self.status.contains(CPUFlags::CARRY) as u16;
+        let result_u16 = self.register_a as u16 + value as u16 + carry;
+
+        self.status.set(CPUFlags::CARRY, result_u16 > 0xFF); // Set C flag if result has a carry-out
+
+        let result_u8 = (result_u16 & 0xFF) as u8;
+        let v = ((self.register_a ^ result_u8) & (value ^ result_u8) & 0x80) != 0;
+        self.status.set(CPUFlags::OVERFLOW, v); // Set V flag if signed result overflowed
+
+        self.set_register_a(result_u8);
+    }
+
     /// LDA (load to register A)
     fn lda(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
@@ -327,33 +341,14 @@ impl CPU {
     fn adc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
-        let carry = self.status.contains(CPUFlags::CARRY) as u16;
-        let result_u16 = self.register_a as u16 + value as u16 + carry;
-
-        self.status.set(CPUFlags::CARRY, result_u16 > 0xFF); // Set C flag if result has a carry-out
-
-        let result_u8 = (result_u16 & 0xFF) as u8;
-        let v = ((self.register_a ^ result_u8) & (value ^ result_u8) & 0x80) != 0;
-        self.status.set(CPUFlags::OVERFLOW, v); // Set V flag if signed result overflowed
-
-        self.set_register_a(result_u8);
+        self.add_to_register_a(value);
     }
 
     /// SBC (substract from register A with borrow-in)
     fn sbc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
-        let carry = self.status.contains(CPUFlags::CARRY) as u16;
-        let inv_value = value ^ 0xFF;
-        let result_u16 = self.register_a as u16 + inv_value as u16 + carry;
-
-        self.status.set(CPUFlags::CARRY, result_u16 > 0xFF); // Set C flag if result has a carry-out
-
-        let result_u8 = (result_u16 & 0xFF) as u8;
-        let v = ((self.register_a ^ result_u8) & (inv_value ^ result_u8) & 0x80) != 0;
-        self.status.set(CPUFlags::OVERFLOW, v); // Set V flag if signed result overflowed
-
-        self.set_register_a(result_u8);
+        self.add_to_register_a(value ^ 0xFF);
     }
 
     pub fn load_and_run(&mut self, program: Vec<u8>) {
