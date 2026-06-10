@@ -270,6 +270,25 @@ impl CPU {
         self.set_register_y(self.register_y.wrapping_sub(1));
     }
 
+    /// INC (increment a memory held value)
+    fn inc(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        let updated_value = value.wrapping_add(1);
+        self.mem_write(addr, updated_value);
+        self.update_zero_and_negative_flags(updated_value);
+    }
+    /// DEC (decrement a memory held value)
+    fn dec(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        let updated_value = value.wrapping_sub(1);
+        self.mem_write(addr, updated_value);
+        self.update_zero_and_negative_flags(updated_value);
+    }
+
     /// SEC (set carry flag)
     fn sec(&mut self) {
         self.status.insert(CPUFlags::CARRY);
@@ -474,6 +493,16 @@ impl CPU {
                 // SBC (substract from register A with borrow-in)
                 0xe9 | 0xe5 | 0xf5 | 0xed | 0xfd | 0xf9 | 0xe1 | 0xf1 => {
                     self.sbc(&opcode.mode);
+                }
+
+                // INC (increment a memory held value)
+                0xe6 | 0xf6 | 0xee | 0xfe => {
+                    self.inc(&opcode.mode);
+                }
+
+                // DEC (decrement a memory held value)
+                0xc6 | 0xd6 | 0xce | 0xde => {
+                    self.dec(&opcode.mode);
                 }
 
                 0xaa => self.tax(), // TAX (transfer register A to register X)
@@ -1236,6 +1265,28 @@ mod test {
             !cpu.status.contains(CPUFlags::NEGATIVE),
             "N should be clear"
         );
+    }
+
+    // ----- INC & DEC (increment/decrement memory) -----
+
+    // First instructions that read, modify, AND write back to the same
+    // memory address. All existing instructions either read into a register
+    // or write from a register — INC/DEC do both.
+
+    #[test]
+    fn test_inc_increments_memory() {
+        let mut cpu = CPU::new();
+        cpu.mem_write(0x10, 0x01);
+        cpu.load_and_run(vec![0xe6, 0x10, 0x00]);
+        assert_eq!(cpu.mem_read(0x10), 0x02);
+    }
+
+    #[test]
+    fn test_dec_decrements_memory() {
+        let mut cpu = CPU::new();
+        cpu.mem_write(0x10, 0x02);
+        cpu.load_and_run(vec![0xc6, 0x10, 0x00]);
+        assert_eq!(cpu.mem_read(0x10), 0x01);
     }
 
     // ----- Integration -----

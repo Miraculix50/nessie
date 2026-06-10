@@ -196,6 +196,17 @@ Like CMP but for the X and Y registers. Each uses 3 addressing modes (Immediate,
 | `test_cpx_equal_sets_z_and_c` | `LDX #$42; CPX #$42` → equal: Z=1, C=1, N=0. X must not be modified. |
 | `test_cpy_equal_sets_z_and_c` | `LDY #$42; CPY #$42` → same as above. Y must not be modified. |
 
+### INC & DEC (increment/decrement memory)
+
+First instructions that read, modify, **and write back** to memory — a new pattern not exercised by any existing instruction. All existing opcodes either read from memory (LDA, AND, ADC, ...) or write to memory (STA, STX, STY, ...), but none do both to the same address.
+
+Both use 4 addressing modes (ZP, ZP,X, Absolute, Absolute,X) — all shared with existing instructions, so the resolver is already covered.
+
+| Test | Purpose |
+|---|---|
+| `test_inc_increments_memory` | Pre-writes `0x01` at `$10`, runs `INC $10` (`$E6`). Asserts the byte was read, incremented, and the result (`0x02`) was written back to the same address. |
+| `test_dec_decrements_memory` | Pre-writes `0x02` at `$10`, runs `DEC $10` (`$C6`). Same read-modify-write assertion but for subtraction. |
+
 ### Register transfers & increments
 
 | Test | Purpose |
