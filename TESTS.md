@@ -187,6 +187,15 @@ CLV is unique among the flag setters — there's no `SEV` to pair with it. The V
 |---|---|
 | `test_clv_clears_overflow_flag` | `LDA #$50; ADC #$50` sets V=1 via signed overflow, then `CLV` clears it. Also asserts that N and Z (set by the ADC) survive CLV intact, proving CLV is not accidentally clearing the entire status byte. |
 
+### CPX & CPY (compare X / compare Y)
+
+Like CMP but for the X and Y registers. Each uses 3 addressing modes (Immediate, ZP, Absolute) — all already covered by LDA/CMP tests. Flag logic is inherited from CMP.
+
+| Test | Purpose |
+|---|---|
+| `test_cpx_equal_sets_z_and_c` | `LDX #$42; CPX #$42` → equal: Z=1, C=1, N=0. X must not be modified. |
+| `test_cpy_equal_sets_z_and_c` | `LDY #$42; CPY #$42` → same as above. Y must not be modified. |
+
 ### Register transfers & increments
 
 | Test | Purpose |

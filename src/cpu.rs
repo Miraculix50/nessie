@@ -337,6 +337,28 @@ impl CPU {
         self.status.set(CPUFlags::CARRY, self.register_a >= value);
     }
 
+    /// CPX (compare register X with memory)
+    fn cpx(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        let result = self.register_x.wrapping_sub(value);
+        self.update_zero_and_negative_flags(result);
+        // Set C flag when register X was bigger than value
+        self.status.set(CPUFlags::CARRY, self.register_x >= value);
+    }
+
+    /// CPY (compare register Y with memory)
+    fn cpy(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        let result = self.register_y.wrapping_sub(value);
+        self.update_zero_and_negative_flags(result);
+        // Set C flag when register Y was bigger than value
+        self.status.set(CPUFlags::CARRY, self.register_y >= value);
+    }
+
     /// ADC (add to register A with carry-in)
     fn adc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
@@ -432,6 +454,16 @@ impl CPU {
                 // CMP (compare register A with memory)
                 0xc9 | 0xc5 | 0xd5 | 0xcd | 0xdd | 0xd9 | 0xc1 | 0xd1 => {
                     self.cmp(&opcode.mode);
+                }
+
+                // CPX (compare register X with memory)
+                0xe0 | 0xe4 | 0xec => {
+                    self.cpx(&opcode.mode);
+                }
+
+                // CPY (compare register Y with memory)
+                0xc0 | 0xc4 | 0xcc => {
+                    self.cpy(&opcode.mode);
                 }
 
                 // ADC (add to register A with carry-in)
@@ -1174,6 +1206,36 @@ mod test {
         // LDA #$42; NOP; BRK -- NOP must not modify A
         cpu.load_and_run(vec![0xa9, 0x42, 0xea, 0x00]);
         assert_eq!(cpu.register_a, 0x42);
+    }
+
+    // ----- CPX & CPY (compare X / compare Y) -----
+
+    #[test]
+    fn test_cpx_equal_sets_z_and_c() {
+        let mut cpu = CPU::new();
+        // LDX #$42; CPX #$42 -> equal: Z=1, C=1. X must not be modified.
+        cpu.load_and_run(vec![0xa2, 0x42, 0xe0, 0x42, 0x00]);
+        assert_eq!(cpu.register_x, 0x42, "CPX must not modify X");
+        assert!(cpu.status.contains(CPUFlags::ZERO), "Z should be set");
+        assert!(cpu.status.contains(CPUFlags::CARRY), "C should be set");
+        assert!(
+            !cpu.status.contains(CPUFlags::NEGATIVE),
+            "N should be clear"
+        );
+    }
+
+    #[test]
+    fn test_cpy_equal_sets_z_and_c() {
+        let mut cpu = CPU::new();
+        // LDY #$42; CPY #$42 -> equal: Z=1, C=1. Y must not be modified.
+        cpu.load_and_run(vec![0xa0, 0x42, 0xc0, 0x42, 0x00]);
+        assert_eq!(cpu.register_y, 0x42, "CPY must not modify Y");
+        assert!(cpu.status.contains(CPUFlags::ZERO), "Z should be set");
+        assert!(cpu.status.contains(CPUFlags::CARRY), "C should be set");
+        assert!(
+            !cpu.status.contains(CPUFlags::NEGATIVE),
+            "N should be clear"
+        );
     }
 
     // ----- Integration -----

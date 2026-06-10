@@ -136,6 +136,14 @@ pub static CPU_OPCODES: &[OpCode] = &[
     OpCode::new(0xd9, "CMP", 3, 4, AddressingMode::Absolute_Y), // page crossed -> 5
     OpCode::new(0xc1, "CMP", 2, 6, AddressingMode::Indirect_X),
     OpCode::new(0xd1, "CMP", 2, 5, AddressingMode::Indirect_Y), // page crossed -> 6
+    // CPX (compare register X with memory)
+    OpCode::new(0xe0, "CPX", 2, 2, AddressingMode::Immediate),
+    OpCode::new(0xe4, "CPX", 2, 3, AddressingMode::ZeroPage),
+    OpCode::new(0xec, "CPX", 3, 4, AddressingMode::Absolute),
+    // CPY (compare register Y with memory)
+    OpCode::new(0xc0, "CPY", 2, 2, AddressingMode::Immediate),
+    OpCode::new(0xc4, "CPY", 2, 3, AddressingMode::ZeroPage),
+    OpCode::new(0xcc, "CPY", 3, 4, AddressingMode::Absolute),
     // ADC (add to register A with carry-in)
     OpCode::new(0x69, "ADC", 2, 2, AddressingMode::Immediate),
     OpCode::new(0x65, "ADC", 2, 3, AddressingMode::ZeroPage),
