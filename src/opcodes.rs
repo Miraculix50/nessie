@@ -47,6 +47,43 @@ pub static CPU_OPCODES: &[OpCode] = &[
     OpCode::new(0x58, "CLI", 1, 2, AddressingMode::NoneAddressing),
     // CLV (clear overflow flag)
     OpCode::new(0xb8, "CLV", 1, 2, AddressingMode::NoneAddressing),
+    // Branch opcodes
+    // branch succeeded -> +1, page crossed -> +1
+    // BEQ (branch if zero flag is set)
+    OpCode::new(0xf0, "BEQ", 2, 2, AddressingMode::NoneAddressing),
+    // BNE (branch if zero flag is clear)
+    OpCode::new(0xd0, "BNE", 2, 2, AddressingMode::NoneAddressing),
+    // BPL (branch if negative flag is clear)
+    OpCode::new(0x10, "BPL", 2, 2, AddressingMode::NoneAddressing),
+    // BMI (branch if negative flag is set)
+    OpCode::new(0x30, "BMI", 2, 2, AddressingMode::NoneAddressing),
+    // BVC (branch if overflow flag is clear)
+    OpCode::new(0x50, "BVC", 2, 2, AddressingMode::NoneAddressing),
+    // BVS (branch if overflow flag is set)
+    OpCode::new(0x70, "BVS", 2, 2, AddressingMode::NoneAddressing),
+    // BCC (branch if carry flag is clear)
+    OpCode::new(0x90, "BCC", 2, 2, AddressingMode::NoneAddressing),
+    // BCS (branch if carry flag is set)
+    OpCode::new(0xb0, "BCS", 2, 2, AddressingMode::NoneAddressing),
+    // JMP (set program counter)
+    OpCode::new(0x4c, "JMP", 3, 3, AddressingMode::NoneAddressing),
+    OpCode::new(0x6c, "JMP", 3, 5, AddressingMode::NoneAddressing),
+    // JSR (jump to subroutine)
+    OpCode::new(0x20, "JSR", 3, 6, AddressingMode::Absolute),
+    // RTS (return from subroutine)
+    OpCode::new(0x60, "RTS", 1, 6, AddressingMode::NoneAddressing),
+    // PHA (push register A to stack)
+    OpCode::new(0x48, "PHA", 1, 3, AddressingMode::NoneAddressing),
+    // PLA (pull register A from stack)
+    OpCode::new(0x68, "PLA", 1, 4, AddressingMode::NoneAddressing),
+    // PHP (push processor status to stack)
+    OpCode::new(0x08, "PHP", 1, 3, AddressingMode::NoneAddressing),
+    // PLP (pull processor status from stack)
+    OpCode::new(0x28, "PLP", 1, 4, AddressingMode::NoneAddressing),
+    // TXS (transfer register X to stack pointer)
+    OpCode::new(0x9a, "TXS", 1, 2, AddressingMode::NoneAddressing),
+    // TSX (transfer stack pointer to register X)
+    OpCode::new(0xba, "TSX", 1, 2, AddressingMode::NoneAddressing),
     // TAX (transfer register A to register X)
     OpCode::new(0xaa, "TAX", 1, 2, AddressingMode::NoneAddressing),
     // TXA (transfer register X to register A)
@@ -172,6 +209,9 @@ pub static CPU_OPCODES: &[OpCode] = &[
     OpCode::new(0xf9, "SBC", 3, 4, AddressingMode::Absolute_Y), // page crossed -> 5
     OpCode::new(0xe1, "SBC", 2, 6, AddressingMode::Indirect_X),
     OpCode::new(0xf1, "SBC", 2, 5, AddressingMode::Indirect_Y), // page crossed -> 6
+    // BIT (test if bits are set in memory)
+    OpCode::new(0x24, "BIT", 2, 3, AddressingMode::ZeroPage),
+    OpCode::new(0x2c, "BIT", 3, 4, AddressingMode::Absolute),
 ];
 
 pub static OPCODES_MAP: LazyLock<HashMap<u8, &'static OpCode>> =
@@ -185,7 +225,7 @@ mod test {
     fn test_opcode_table_mode_length_consistency() {
         for op in CPU_OPCODES {
             let expected_len = match op.mode {
-                AddressingMode::NoneAddressing => 1,
+                AddressingMode::NoneAddressing => op.len,
                 AddressingMode::Immediate
                 | AddressingMode::ZeroPage
                 | AddressingMode::ZeroPage_X

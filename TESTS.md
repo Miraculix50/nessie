@@ -207,6 +207,113 @@ Both use 4 addressing modes (ZP, ZP,X, Absolute, Absolute,X) — all shared with
 | `test_inc_increments_memory` | Pre-writes `0x01` at `$10`, runs `INC $10` (`$E6`). Asserts the byte was read, incremented, and the result (`0x02`) was written back to the same address. |
 | `test_dec_decrements_memory` | Pre-writes `0x02` at `$10`, runs `DEC $10` (`$C6`). Same read-modify-write assertion but for subtraction. |
 
+### BEQ (branch if equal)
+
+BEQ is the first branch instruction. It introduces **Relative addressing**: a signed offset byte at PC is read, and if `Z=1` (the condition), the offset is added to the current PC (which points just past the branch instruction). The test verifies not only that a branch *is* taken when Z=1, but also that it correctly *falls through* when Z=0 — both are critical for correct branching.
+
+| Test | Purpose |
+|---|---|
+ | `test_beq_branches_when_zero_set` | `LDA #$00; BEQ +2; BRK` → Z=1 from LDA, BEQ jumps over the BRK to zeroed memory (which is also BRK). Asserts final `program_counter == 0x8007` (the byte after the landed BRK), proving the branch offset was added to PC. |
+| `test_beq_does_not_branch_when_zero_clear` | `BEQ +2; BRK` → Z=0 after reset, BEQ falls through. Asserts final `program_counter == 0x8003` (the byte after the fall-through BRK), proving the branch was correctly not taken and the PC advanced past the instruction normally. |
+
+### BNE (branch if not equal)
+
+BNE branches when `Z=0`. The Relative addressing mode is already wired by BEQ, so no new infrastructure.
+
+| Test | Purpose |
+|---|---|---|
+ | `test_bne_branches_when_zero_clear` | `BNE +2; BRK` → Z=0 after reset, branch is taken over BRK to zeroed memory (BRK). Asserts final `program_counter == 0x8005` (the byte after the landed BRK), proving the branch offset was added to PC. |
+ | `test_bne_does_not_branch_when_zero_set` | `LDA #$00; BNE +2; BRK` → Z=1 from LDA, BNE falls through. Asserts final `program_counter == 0x8005` (the byte after the fall-through BRK), proving the branch was correctly not taken and the PC advanced past the instruction normally. |
+
+### BPL & BMI (sign-based branches)
+
+BPL ($10) branches when N=0 (positive result). BMI ($30) branches when N=1 (negative result). Same Relative addressing as BEQ/BNE.
+
+| Test | Purpose |
+|---|---|---|
+| `test_bpl_branches_when_positive` | N=0 after reset, BPL branches over BRK. |
+| `test_bpl_does_not_branch_when_negative` | `LDA #$80` sets N=1, BPL falls through. |
+| `test_bmi_branches_when_negative` | `LDA #$80` sets N=1, BMI branches over BRK. |
+| `test_bmi_does_not_branch_when_positive` | N=0 after reset, BMI falls through. |
+
+### BCC & BCS (carry-based branches)
+
+BCC ($90) branches when C=0 (no carry/no borrow). BCS ($B0) branches when C=1 (carry/borrow).
+
+| Test | Purpose |
+|---|---|---|
+| `test_bcc_branches_when_carry_clear` | C=0 after reset, BCC branches over BRK. |
+| `test_bcc_does_not_branch_when_carry_set` | `SEC` sets C=1, BCC falls through. |
+| `test_bcs_branches_when_carry_set` | `SEC` sets C=1, BCS branches over BRK. |
+| `test_bcs_does_not_branch_when_carry_clear` | C=0 after reset, BCS falls through. |
+
+### BVC & BVS (overflow-based branches)
+
+BVC ($50) branches when V=0 (no signed overflow). BVS ($70) branches when V=1 (signed overflow).
+
+| Test | Purpose |
+|---|---|---|
+| `test_bvc_branches_when_overflow_clear` | V=0 after reset, BVC branches over BRK. |
+| `test_bvc_does_not_branch_when_overflow_set` | `LDA #$50; ADC #$50` sets V=1 via signed overflow, BVC falls through. |
+| `test_bvs_branches_when_overflow_set` | `LDA #$50; ADC #$50` sets V=1, BVS branches over BRK. |
+| `test_bvs_does_not_branch_when_overflow_clear` | V=0 after reset, BVS falls through. |
+
+### BIT (Bit Test)
+
+BIT ($24 ZP, $2C Absolute) is the only instruction that reads the V flag from memory (bit 6 of the operand), and its Z logic is `A & M == 0` rather than the usual `M == 0`. It does not modify A.
+
+These flag semantics are unique — BIT does not share `update_zero_and_negative_flags` with any other instruction, so even one test meaningfully exercises new code paths.
+
+| Test | Purpose |
+|---|---|---|
+| `test_bit_sets_n_v_z_flags_from_memory` | Pre-writes `$C0` at `$10`, runs `LDA #$03; BIT $10; BRK`. Asserts A is still `$03`, N=1 (bit 7 of `$C0`), V=1 (bit 6 of `$C0`), and Z=1 (`$03 & $C0 == 0`). |
+
+### JMP (Jump)
+
+JMP changes the program counter unconditionally — no flags affected. Absolute ($4C) embeds the target address directly; Indirect ($6C) reads the target from a 16-bit pointer in memory.
+
+The NMOS 6502's Indirect JMP has a page-wrap bug: when the pointer address ends in `$FF` (e.g. `$01FF`), the high byte of the target is fetched from `$xx00` (`$0100`) instead of `$(xx+1)00` (`$0200`), because the address adder does not carry into the high byte.
+
+| Test | Purpose |
+|---|---|---|
+| `test_jmp_absolute_jumps_to_address` | `JMP $8004; BRK` → PC set to `$8004`, BRK lands there, final PC = `$8005`. |
+| `test_jmp_indirect_jumps_through_pointer` | Pre-writes pointer `$8004` at `$0010`, runs `JMP ($0010); BRK`. Same landing as absolute test. |
+| `test_jmp_indirect_page_wrap_bug` | Pre-writes `$08` at `$01FF` and `$80` at `$0100`, runs `JMP ($01FF); BRK`. With the bug, high byte comes from `$0100` → target `$8008` → final PC = `$8009`. (Without the bug, target would be `$0008`.) |
+
+### PHA & PLA (stack push/pop)
+
+Introduces the stack pointer (S register, initialized to `$FD`). PHA pushes A onto the stack (store at `$0100|SP`, then decrement). PLA increments SP, loads from `$0100|SP`, and sets N/Z from the loaded value via the shared `set_register_a` helper.
+
+| Test | Purpose |
+|---|---|
+| `test_pha_pushes_a_onto_stack_and_decrements_sp` | `LDA #$42; PHA; BRK`. Asserts SP = `$FC` (decremented from `$FD`), and `$42` stored at `$01FD`. |
+| `test_pla_round_trip_restores_a_and_sp` | `LDA #$42; PHA; LDA #$00; PLA; BRK`. Asserts A restored to `$42`, SP back to `$FD`. |
+
+### PHP & PLP (stack push/pop for status)
+
+PHP pushes the status register onto the stack; PLP restores it. Together they provide the ability to save and restore the full processor state.
+
+| Test | Purpose |
+|---|---|
+| `test_php_plp_round_trip_restores_status` | `SEC; PHP; CLC; PLP; BRK` → after PLP, C=1 (restored from the pushed status), proving the status round-trip preserves flag state. |
+
+### TXS & TSX (stack pointer transfers)
+
+TXS copies X to SP (no flags), TSX copies SP to X (sets N/Z via shared `update_zero_and_negative_flags`). These are needed before JSR/RTS can set up the stack frame.
+
+| Test | Purpose |
+|---|---|
+| `test_txs_transfers_x_to_stack_pointer` | `LDX #$42; TXS; BRK` → SP = `$42`. |
+| `test_tsx_transfers_stack_pointer_to_x` | `LDX #$42; TXS; LDX #$00; TSX; BRK` → X = `$42` (restored from SP). |
+
+### JSR & RTS (subroutine call/return)
+
+JSR pushes a return address onto the stack and jumps to a target. RTS pops the address and returns. Together they test the full subroutine flow, including stack push/pop for 16-bit values.
+
+| Test | Purpose |
+|---|---|
+| `test_jsr_rts_subroutine_call_and_return` | `JSR $8007; ...; LDA #$42; BRK` with subroutine `LDA #$03; RTS` at `$8007`. After RTS returns, A=`$42` and SP=`$FD`, proving both JSR and RTS work correctly. |
+
 ### Register transfers & increments
 
 | Test | Purpose |

@@ -1,5 +1,5 @@
-use crate::opcodes;
-use bitflags::bitflags;
+use crate::opcodes::{self, OpCode};
+use bitflags::{Flags, bitflags};
 
 bitflags! {
 
@@ -28,12 +28,16 @@ bitflags! {
     }
 }
 
+const STACK: u16 = 0x0100;
+const STACK_RESET: u8 = 0xfd;
+
 pub struct CPU {
     pub register_a: u8,
     pub register_x: u8,
     pub register_y: u8,
     pub status: CPUFlags,
     pub program_counter: u16,
+    pub stack_pointer: u8,
     memory: [u8; 0xFFFF],
 }
 
@@ -88,6 +92,7 @@ impl CPU {
             register_y: 0,
             status: CPUFlags::from_bits_truncate(0b00100100), // Set BREAK2 and INTERRUPT_DISABLE
             program_counter: 0,
+            stack_pointer: STACK_RESET,
             memory: [0; 0xFFFF],
         }
     }
@@ -189,6 +194,75 @@ impl CPU {
         self.status.set(CPUFlags::OVERFLOW, v); // Set V flag if signed result overflowed
 
         self.set_register_a(result_u8);
+    }
+
+    /// General function for branch opcodes
+    fn branch(&mut self, condition: bool) {
+        if condition {
+            let jump = self.mem_read(self.program_counter) as i8 as i16;
+            let jump_addr = self
+                .program_counter
+                .wrapping_add(1)
+                .wrapping_add_signed(jump);
+
+            self.program_counter = jump_addr;
+        }
+    }
+
+    /// Helper function for pushing to the stack
+    fn stack_push(&mut self, data: u8) {
+        self.mem_write(STACK + self.stack_pointer as u16, data);
+        self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+    }
+
+    /// Helper function for popping from the stack
+    fn stack_pop(&mut self) -> u8 {
+        self.stack_pointer = self.stack_pointer.wrapping_add(1);
+        self.mem_read(STACK + self.stack_pointer as u16)
+    }
+
+    /// Helper function for pushing u16 values to the stack
+    fn stack_push_u16(&mut self, data: u16) {
+        self.mem_write_u16(STACK + self.stack_pointer as u16, data);
+        self.stack_pointer = self.stack_pointer.wrapping_sub(2);
+    }
+
+    /// Helper function for popping u16 values from the stack
+    fn stack_pop_u16(&mut self) -> u16 {
+        self.stack_pointer = self.stack_pointer.wrapping_add(2);
+        self.mem_read_u16(STACK + self.stack_pointer as u16)
+    }
+
+    /// JMP with absolute addressing mode
+    fn jmp_absolute(&mut self) {
+        self.program_counter = self.mem_read_u16(self.program_counter);
+    }
+
+    /// JMP with indirect addressing mode
+    fn jmp_indirect(&mut self) {
+        let pointer = self.mem_read_u16(self.program_counter);
+
+        let lo = self.mem_read(pointer) as u16;
+        let hi = if (pointer & 0xFF) == 0xFF {
+            self.mem_read(pointer & 0xFF00) as u16
+        } else {
+            self.mem_read(pointer + 1) as u16
+        };
+
+        self.program_counter = (hi << 8) | lo;
+    }
+
+    /// JSR (jump to subroutine)
+    fn jsr(&mut self, mode: &AddressingMode) {
+        self.stack_push_u16(self.program_counter + 2 - 1); // return_addr (after JSR) - 1
+        let target = self.get_operand_address(mode); // Absolute value is used directly (not as address)
+        self.program_counter = target;
+    }
+
+    /// RTS (return from subroutine)
+    fn rts(&mut self) {
+        let target = self.stack_pop_u16();
+        self.program_counter = target + 1;
     }
 
     /// LDA (load to register A)
@@ -392,6 +466,53 @@ impl CPU {
         self.add_to_register_a(value ^ 0xFF);
     }
 
+    /// BIT (test if bits are set in memory)
+    fn bit(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        self.status
+            .set(CPUFlags::ZERO, (self.register_a & value) == 0);
+        self.status
+            .set(CPUFlags::OVERFLOW, (value & 0b0100_0000) != 0);
+        self.status
+            .set(CPUFlags::NEGATIVE, (value & 0b1000_0000) != 0);
+    }
+
+    /// PHA (push register A to stack)
+    fn pha(&mut self) {
+        self.stack_push(self.register_a);
+    }
+
+    /// PLA (push register A from stack)
+    fn pla(&mut self) {
+        let data = self.stack_pop();
+        self.set_register_a(data);
+    }
+
+    /// PHP (push processor status to stack)
+    fn php(&mut self) {
+        // Always set B and unused flag with PHP
+        let flags_to_push = self.status.bits() | 0b00110000;
+        self.stack_push(flags_to_push);
+    }
+
+    /// PLP (pull processor status from stack)
+    fn plp(&mut self) {
+        let flags = self.stack_pop();
+        self.status = CPUFlags::from_bits_truncate(flags);
+    }
+
+    /// TXS (transfer register X to stack pointer)
+    fn txs(&mut self) {
+        self.stack_pointer = self.register_x;
+    }
+
+    /// TSX (transfer stack pointer to register X)
+    fn tsx(&mut self) {
+        self.set_register_x(self.stack_pointer);
+    }
+
     pub fn load_and_run(&mut self, program: Vec<u8>) {
         self.load(program);
         self.reset();
@@ -495,6 +616,11 @@ impl CPU {
                     self.sbc(&opcode.mode);
                 }
 
+                // BIT (test if bits are set in memory)
+                0x24 | 0x2c => {
+                    self.bit(&opcode.mode);
+                }
+
                 // INC (increment a memory held value)
                 0xe6 | 0xf6 | 0xee | 0xfe => {
                     self.inc(&opcode.mode);
@@ -520,8 +646,26 @@ impl CPU {
                 0x78 => self.sei(), // SEI (set interrupt disable flag)
                 0x58 => self.cli(), // CLI (clear interrupt disable flag)
                 0xb8 => self.clv(), // CLV (clear overflow flag)
-                0xea => {}          // NOP (do nothing, only increment program counter)
-                0x00 => return,     // BRK (stop execution)
+                0xf0 => self.branch(self.status.contains(CPUFlags::ZERO)), // BEQ (branch if zero flag is set)
+                0xd0 => self.branch(!self.status.contains(CPUFlags::ZERO)), // BNE (branch if zero flag is clear)
+                0x10 => self.branch(!self.status.contains(CPUFlags::NEGATIVE)), // BPL
+                0x30 => self.branch(self.status.contains(CPUFlags::NEGATIVE)), // BMI
+                0x50 => self.branch(!self.status.contains(CPUFlags::OVERFLOW)), // BVC
+                0x70 => self.branch(self.status.contains(CPUFlags::OVERFLOW)), // BVS
+                0x90 => self.branch(!self.status.contains(CPUFlags::CARRY)), // BCC
+                0xb0 => self.branch(self.status.contains(CPUFlags::CARRY)), // BCS
+                0x4c => self.jmp_absolute(), // JMP with absolute addressing mode
+                0x6c => self.jmp_indirect(), // JMP with indirect addressing mode
+                0x20 => self.jsr(&opcode.mode), // JSR (jump to subroutine)
+                0x60 => self.rts(),          // RTS (return from subroutine)
+                0x48 => self.pha(),          // PHA (push register A to stack)
+                0x68 => self.pla(),          // PLA (pull register A from stack)
+                0x08 => self.php(),          // PHP (push processor status to stack)
+                0x28 => self.plp(),          // PLP (pull processor status from stack)
+                0x9a => self.txs(),          // TXS (transfer register X to stack pointer)
+                0xba => self.tsx(),          // TSX (transfer stack pointer to register X)
+                0xea => {}                   // NOP (do nothing, only increment program counter)
+                0x00 => return,              // BRK (stop execution)
                 _ => unimplemented!(
                     "opcode 0x{:02x} ({}) has no dispatch arm in run()",
                     code,
@@ -1287,6 +1431,327 @@ mod test {
         cpu.mem_write(0x10, 0x02);
         cpu.load_and_run(vec![0xc6, 0x10, 0x00]);
         assert_eq!(cpu.mem_read(0x10), 0x01);
+    }
+
+    // ----- BEQ (branch if equal, i.e. Z=1) -----
+
+    // Branches use Relative addressing: a signed offset byte is read from
+    // the program stream. If the condition is met, the offset is added to PC;
+    // otherwise execution falls through to the next instruction.
+    //
+    // The offset is relative to the byte AFTER the branch instruction
+    // (i.e. PC already points past the opcode when the offset is read).
+
+    #[test]
+    fn test_beq_branches_when_zero_set() {
+        let mut cpu = CPU::new();
+        // LDA #$00 -> sets Z=1, then BEQ +2 skips the BRK at 0x8004 and
+        // lands on zeroed memory (0x00 = BRK) at 0x8006.
+        cpu.load_and_run(vec![0xa9, 0x00, 0xf0, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8007);
+    }
+
+    #[test]
+    fn test_beq_does_not_branch_when_zero_clear() {
+        let mut cpu = CPU::new();
+        // Z=0 after reset, so BEQ falls through to BRK at 0x8002.
+        cpu.load_and_run(vec![0xf0, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8003);
+    }
+
+    // ----- BNE (branch if not equal, i.e. Z=0) -----
+
+    #[test]
+    fn test_bne_branches_when_zero_clear() {
+        let mut cpu = CPU::new();
+        // Z=0 after reset, so BNE branches over the BRK to zeroed memory (BRK).
+        cpu.load_and_run(vec![0xd0, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8005);
+    }
+
+    #[test]
+    fn test_bne_does_not_branch_when_zero_set() {
+        let mut cpu = CPU::new();
+        // LDA #$00 sets Z=1, so BNE falls through to BRK.
+        cpu.load_and_run(vec![0xa9, 0x00, 0xd0, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8005);
+    }
+
+    // ----- BPL & BMI (sign-based branches) -----
+
+    // BPL ($10): branch if N=0. BMI ($30): branch if N=1.
+
+    #[test]
+    fn test_bpl_branches_when_positive() {
+        let mut cpu = CPU::new();
+        // N=0 after reset, BPL takes the branch over BRK.
+        cpu.load_and_run(vec![0x10, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8005);
+    }
+
+    #[test]
+    fn test_bpl_does_not_branch_when_negative() {
+        let mut cpu = CPU::new();
+        // LDA #$80 sets N=1, BPL falls through.
+        cpu.load_and_run(vec![0xa9, 0x80, 0x10, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8005);
+    }
+
+    #[test]
+    fn test_bmi_branches_when_negative() {
+        let mut cpu = CPU::new();
+        // LDA #$80 sets N=1, BMI branches over BRK.
+        cpu.load_and_run(vec![0xa9, 0x80, 0x30, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8007);
+    }
+
+    #[test]
+    fn test_bmi_does_not_branch_when_positive() {
+        let mut cpu = CPU::new();
+        // N=0 after reset, BMI falls through.
+        cpu.load_and_run(vec![0x30, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8003);
+    }
+
+    // ----- BCC & BCS (carry-based branches) -----
+
+    // BCC ($90): branch if C=0. BCS ($B0): branch if C=1.
+
+    #[test]
+    fn test_bcc_branches_when_carry_clear() {
+        let mut cpu = CPU::new();
+        // C=0 after reset, BCC takes the branch over BRK.
+        cpu.load_and_run(vec![0x90, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8005);
+    }
+
+    #[test]
+    fn test_bcc_does_not_branch_when_carry_set() {
+        let mut cpu = CPU::new();
+        // SEC sets C=1, BCC falls through.
+        cpu.load_and_run(vec![0x38, 0x90, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8004);
+    }
+
+    #[test]
+    fn test_bcs_branches_when_carry_set() {
+        let mut cpu = CPU::new();
+        // SEC sets C=1, BCS branches over BRK.
+        cpu.load_and_run(vec![0x38, 0xb0, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8006);
+    }
+
+    #[test]
+    fn test_bcs_does_not_branch_when_carry_clear() {
+        let mut cpu = CPU::new();
+        // C=0 after reset, BCS falls through.
+        cpu.load_and_run(vec![0xb0, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8003);
+    }
+
+    // ----- BVC & BVS (overflow-based branches) -----
+
+    // BVC ($50): branch if V=0. BVS ($70): branch if V=1.
+
+    #[test]
+    fn test_bvc_branches_when_overflow_clear() {
+        let mut cpu = CPU::new();
+        // V=0 after reset, BVC takes the branch over BRK.
+        cpu.load_and_run(vec![0x50, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8005);
+    }
+
+    #[test]
+    fn test_bvc_does_not_branch_when_overflow_set() {
+        let mut cpu = CPU::new();
+        // LDA #$50; ADC #$50 sets V=1, BVC falls through.
+        cpu.load_and_run(vec![0xa9, 0x50, 0x69, 0x50, 0x50, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8007);
+    }
+
+    #[test]
+    fn test_bvs_branches_when_overflow_set() {
+        let mut cpu = CPU::new();
+        // LDA #$50; ADC #$50 sets V=1, BVS branches over BRK.
+        cpu.load_and_run(vec![0xa9, 0x50, 0x69, 0x50, 0x70, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8009);
+    }
+
+    #[test]
+    fn test_bvs_does_not_branch_when_overflow_clear() {
+        let mut cpu = CPU::new();
+        // V=0 after reset, BVS falls through.
+        cpu.load_and_run(vec![0x70, 0x02, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8003);
+    }
+
+    // ----- BIT (Bit Test) -----
+
+    // BIT ($24/$2C) sets N = bit 7 of memory, V = bit 6 of memory,
+    // Z = (A & memory) == 0, and does NOT modify A. It uses ZeroPage
+    // and Absolute modes (both covered by LDA tests), so one functional
+    // test suffices.
+
+    #[test]
+    fn test_bit_sets_n_v_z_flags_from_memory() {
+        let mut cpu = CPU::new();
+        // Pre-seed $10 with 0xC0 (bit 7 = 1, bit 6 = 1).
+        cpu.mem_write(0x0010, 0xC0);
+        // LDA #$03; BIT $10; BRK
+        cpu.load_and_run(vec![0xa9, 0x03, 0x24, 0x10, 0x00]);
+        assert_eq!(cpu.register_a, 0x03, "A must not be modified by BIT");
+        assert!(
+            cpu.status.contains(CPUFlags::NEGATIVE),
+            "N flag: bit 7 of 0xC0 is set"
+        );
+        assert!(
+            cpu.status.contains(CPUFlags::OVERFLOW),
+            "V flag: bit 6 of 0xC0 is set"
+        );
+        assert!(
+            cpu.status.contains(CPUFlags::ZERO),
+            "Z flag: 0x03 & 0xC0 == 0, so Z must be set"
+        );
+    }
+
+    // ----- JMP (Jump) -----
+
+    // JMP Absolute ($4C): set PC to the address in the next two bytes.
+    // JMP Indirect ($6C): set PC to the address stored at the pointer
+    // in the next two bytes. The NMOS 6502 has a page-wrap bug: when
+    // the pointer address ends in $FF, the high byte is fetched from
+    // $xx00 instead of $(xx+1)$00.
+
+    #[test]
+    fn test_jmp_absolute_jumps_to_address() {
+        let mut cpu = CPU::new();
+        // JMP $8004 skips the fall-through BRK at $8003 and lands at
+        // $8004 (zeroed memory = BRK). Final PC = $8005.
+        cpu.load_and_run(vec![0x4c, 0x04, 0x80, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8005);
+    }
+
+    #[test]
+    fn test_jmp_indirect_jumps_through_pointer() {
+        let mut cpu = CPU::new();
+        // Pre-write pointer value $8004 at $0010-$0011.
+        cpu.mem_write(0x0010, 0x04);
+        cpu.mem_write(0x0011, 0x80);
+        // JMP ($0010); BRK
+        cpu.load_and_run(vec![0x6c, 0x10, 0x00, 0x00]);
+        assert_eq!(cpu.program_counter, 0x8005);
+    }
+
+    #[test]
+    fn test_jmp_indirect_page_wrap_bug() {
+        let mut cpu = CPU::new();
+        // Pre-write pointer at $01FF: low=$08, high=$80.
+        // The NMOS bug means high is read from $0100 (not $0200),
+        // giving target $8008 instead of $0008.
+        cpu.mem_write(0x01FF, 0x08);
+        cpu.mem_write(0x0100, 0x80);
+        // JMP ($01FF); BRK
+        cpu.load_and_run(vec![0x6c, 0xff, 0x01, 0x00]);
+        // With bug: target = $8008 → BRK at $8008 → PC = $8009
+        assert_eq!(cpu.program_counter, 0x8009);
+    }
+
+    // ----- PHA & PLA (stack push/pop for A) -----
+
+    // PHA ($48): push A onto stack (pre-decrement store).
+    // PLA ($68): pull from stack into A (post-increment load), sets N/Z.
+
+    #[test]
+    fn test_pha_pushes_a_onto_stack_and_decrements_sp() {
+        let mut cpu = CPU::new();
+        // LDA #$42; PHA; BRK
+        cpu.load_and_run(vec![0xa9, 0x42, 0x48, 0x00]);
+        assert_eq!(
+            cpu.stack_pointer, 0xFC,
+            "SP decremented once from initial 0xFD"
+        );
+        assert_eq!(
+            cpu.mem_read(0x01FD),
+            0x42,
+            "A=0x42 stored at current SP before decrement (0x0100|initial_SP)"
+        );
+    }
+
+    #[test]
+    fn test_pla_round_trip_restores_a_and_sp() {
+        let mut cpu = CPU::new();
+        // LDA #$42; PHA; LDA #$00; PLA; BRK
+        cpu.load_and_run(vec![0xa9, 0x42, 0x48, 0xa9, 0x00, 0x68, 0x00]);
+        assert_eq!(cpu.register_a, 0x42, "A should be restored from stack");
+        assert_eq!(
+            cpu.stack_pointer, 0xFD,
+            "SP should return to initial 0xFD after push/pop"
+        );
+    }
+
+    // ----- PHP & PLP (stack push/pop for status) -----
+
+    // PHP ($08): push status onto stack.
+    // PLP ($28): pull from stack into status, restoring all flags.
+
+    #[test]
+    fn test_php_plp_round_trip_restores_status() {
+        let mut cpu = CPU::new();
+        // SEC (C=1); PHP; CLC (C=0); PLP; BRK
+        cpu.load_and_run(vec![0x38, 0x08, 0x18, 0x28, 0x00]);
+        assert!(
+            cpu.status.contains(CPUFlags::CARRY),
+            "C should be 1 after PLP restores the status pushed after SEC"
+        );
+    }
+
+    // ----- TXS & TSX (stack pointer transfers) -----
+
+    // TXS ($9A): transfer X to SP (no flags).
+    // TSX ($BA): transfer SP to X (sets N/Z from X).
+
+    #[test]
+    fn test_txs_transfers_x_to_stack_pointer() {
+        let mut cpu = CPU::new();
+        // LDX #$42; TXS; BRK
+        cpu.load_and_run(vec![0xa2, 0x42, 0x9a, 0x00]);
+        assert_eq!(cpu.stack_pointer, 0x42, "SP should equal X after TXS");
+    }
+
+    #[test]
+    fn test_tsx_transfers_stack_pointer_to_x() {
+        let mut cpu = CPU::new();
+        // LDX #$42; TXS (SP=0x42); LDX #$00 (clobber X); TSX (X=SP); BRK
+        cpu.load_and_run(vec![0xa2, 0x42, 0x9a, 0xa2, 0x00, 0xba, 0x00]);
+        assert_eq!(cpu.register_x, 0x42, "X should be restored from SP");
+    }
+
+    // ----- JSR & RTS (subroutine call/return) -----
+
+    // JSR ($20): push return address minus 1 onto stack, jump to target.
+    // RTS ($60): pop return address, add 1, and jump there.
+
+    #[test]
+    fn test_jsr_rts_subroutine_call_and_return() {
+        let mut cpu = CPU::new();
+        // 0x8000: JSR $8007     -> call subroutine
+        // 0x8003: LDA #$42      -> return here after RTS
+        // 0x8005: BRK
+        // 0x8005-0x8006: padding
+        // 0x8007: LDA #$03      -> subroutine clobbers A
+        // 0x8009: RTS
+        cpu.load_and_run(vec![
+            0x20, 0x07, 0x80, // JSR $8007
+            0xa9, 0x42, // LDA #$42 (return here)
+            0x00, 0x00, // BRK as padding
+            0xa9, 0x03, // LDA #$03 (subroutine)
+            0x60, // RTS
+        ]);
+        assert_eq!(
+            cpu.register_a, 0x42,
+            "A should be 0x42 after returning from subroutine"
+        );
+        assert_eq!(cpu.stack_pointer, 0xFD, "SP should return to initial 0xFD");
     }
 
     // ----- Integration -----
