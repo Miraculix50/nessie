@@ -314,6 +314,27 @@ JSR pushes a return address onto the stack and jumps to a target. RTS pops the a
 |---|---|
 | `test_jsr_rts_subroutine_call_and_return` | `JSR $8007; ...; LDA #$42; BRK` with subroutine `LDA #$03; RTS` at `$8007`. After RTS returns, A=`$42` and SP=`$FD`, proving both JSR and RTS work correctly. |
 
+### ASL, LSR, ROL, ROR (shifts & rotates)
+
+These introduce the **Accumulator addressing mode** (instruction operates on `register_a` directly with no operand bytes) and new Carry-flag interactions: ASL/LSR shift a bit out into C, ROL/ROR rotate through C (reading the old C into the vacated bit position).
+
+All four also support memory addressing modes (ZeroPage, ZeroPage_X, Absolute, Absolute_X) — these share `get_operand_address` with LDA and the read-modify-write pattern with INC/DEC, so they are not separately tested per the conventions.
+
+| Test | Purpose |
+|---|---|
+| `test_asl_accumulator_shifts_left_and_sets_carry` | `LDA #$80; ASL A; BRK` → A=$00, C=1, Z=1, N=0. |
+| `test_lsr_accumulator_shifts_right_and_sets_carry` | `LDA #$01; LSR A; BRK` → A=$00, C=1, Z=1, N=0. |
+| `test_rol_accumulator_rotates_left_through_carry` | `SEC; LDA #$80; ROL A; BRK` → A=$01 (C shifted in), C=1 (bit 7 of $80). |
+| `test_ror_accumulator_rotates_right_through_carry` | `SEC; LDA #$01; ROR A; BRK` → A=$80 (C shifted in), C=1 (bit 0 of $01). |
+
+### RTI (Return from Interrupt)
+
+RTI pops the status register and then the 16-bit program counter from the stack (without the +1 that RTS does). Since our BRK is a simplified halt (not the full push-and-vector), the test manually pre-writes the stack state that a real BRK/IRQ would have left behind.
+
+| Test | Purpose |
+|---|---|
+| `test_rti_restores_status_and_pc_from_stack` | Pre-writes status with C=1 and PC=$8004 onto the stack, sets SP via TXS, runs RTI. Asserts PC=$8005 (BRK at $8004 halts), SP=$FC, and C=1 restored. |
+
 ### Register transfers & increments
 
 | Test | Purpose |

@@ -1,5 +1,5 @@
-use crate::opcodes::{self, OpCode};
-use bitflags::{Flags, bitflags};
+use crate::opcodes;
+use bitflags::bitflags;
 
 bitflags! {
 
@@ -223,14 +223,18 @@ impl CPU {
 
     /// Helper function for pushing u16 values to the stack
     fn stack_push_u16(&mut self, data: u16) {
-        self.mem_write_u16(STACK + self.stack_pointer as u16, data);
-        self.stack_pointer = self.stack_pointer.wrapping_sub(2);
+        let hi = (data >> 8) as u8;
+        let lo = data as u8;
+        self.stack_push(hi); // Stack grows downwards: lo <- hi <- old
+        self.stack_push(lo);
     }
 
     /// Helper function for popping u16 values from the stack
     fn stack_pop_u16(&mut self) -> u16 {
-        self.stack_pointer = self.stack_pointer.wrapping_add(2);
-        self.mem_read_u16(STACK + self.stack_pointer as u16)
+        let lo = self.stack_pop() as u16;
+        let hi = self.stack_pop() as u16;
+
+        (hi << 8) | lo
     }
 
     /// JMP with absolute addressing mode
@@ -263,6 +267,14 @@ impl CPU {
     fn rts(&mut self) {
         let target = self.stack_pop_u16();
         self.program_counter = target + 1;
+    }
+
+    // RTI (return from interrupt)
+    fn rti(&mut self) {
+        let flags = self.stack_pop();
+        self.status = CPUFlags::from_bits_truncate(flags);
+
+        self.program_counter = self.stack_pop_u16();
     }
 
     /// LDA (load to register A)
@@ -419,6 +431,86 @@ impl CPU {
         self.set_register_a(self.register_a ^ value);
     }
 
+    /// ASL (arithmetic shift left) performed on the accumulator
+    fn asl_accumulator(&mut self) {
+        let shifted = self.register_a << 1;
+        self.status
+            .set(CPUFlags::CARRY, self.register_a & 0x80 != 0);
+        self.set_register_a(shifted);
+    }
+
+    /// ASL (arithmetic shift left) performed on a memory held value
+    fn asl(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        let shifted = value << 1;
+        self.status.set(CPUFlags::CARRY, value & 0x80 != 0);
+        self.update_zero_and_negative_flags(shifted);
+        self.mem_write(addr, shifted);
+    }
+
+    /// LSR (logical shift right) performed on the accumulator
+    fn lsr_accumulator(&mut self) {
+        let shifted = self.register_a >> 1;
+        self.status
+            .set(CPUFlags::CARRY, self.register_a & 0x01 != 0);
+        self.set_register_a(shifted);
+    }
+
+    /// LSR (logical shift right) performed on a memory held value
+    fn lsr(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        let shifted = value >> 1;
+        self.status.set(CPUFlags::CARRY, value & 0x01 != 0);
+        self.update_zero_and_negative_flags(shifted);
+        self.mem_write(addr, shifted);
+    }
+
+    /// ROL (rotate left) performed on the accumulator
+    fn rol_accumulator(&mut self) {
+        let carry = self.status.contains(CPUFlags::CARRY) as u8;
+        let rotated = (self.register_a << 1) | carry;
+        self.status
+            .set(CPUFlags::CARRY, self.register_a & 0x80 != 0);
+        self.set_register_a(rotated);
+    }
+
+    /// ROL (rotate left) performed on a memory held value
+    fn rol(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        let carry = self.status.contains(CPUFlags::CARRY) as u8;
+        let rotated = (value << 1) | carry;
+        self.status.set(CPUFlags::CARRY, value & 0x80 != 0);
+        self.update_zero_and_negative_flags(rotated);
+        self.mem_write(addr, rotated);
+    }
+
+    /// ROR (rotate right) performed on the accumulator
+    fn ror_accumulator(&mut self) {
+        let carry = self.status.contains(CPUFlags::CARRY) as u8;
+        let rotated = (self.register_a >> 1) | (carry << 7);
+        self.status
+            .set(CPUFlags::CARRY, self.register_a & 0x01 != 0);
+        self.set_register_a(rotated);
+    }
+
+    /// ROR (rotate right) performed on a memory held value
+    fn ror(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        let carry = self.status.contains(CPUFlags::CARRY) as u8;
+        let rotated = (value >> 1) | (carry << 7);
+        self.status.set(CPUFlags::CARRY, value & 0x01 != 0);
+        self.update_zero_and_negative_flags(rotated);
+        self.mem_write(addr, rotated);
+    }
+
     /// CMP (compare register A with memory)
     fn cmp(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
@@ -530,6 +622,7 @@ impl CPU {
         self.register_y = 0;
         self.status = CPUFlags::from_bits_truncate(0b00100100);
 
+        self.stack_pointer = STACK_RESET;
         self.program_counter = self.mem_read_u16(0xFFFC)
     }
 
@@ -589,6 +682,38 @@ impl CPU {
                 // EOR (perform a logical XOR on register A)
                 0x49 | 0x45 | 0x55 | 0x4d | 0x5d | 0x59 | 0x41 | 0x51 => {
                     self.eor(&opcode.mode);
+                }
+
+                // ASL (arithmetic shift left)
+                // performed on the accumulator
+                0x0a => self.asl_accumulator(),
+                // performed on a memory held value
+                0x06 | 0x16 | 0x0e | 0x1e => {
+                    self.asl(&opcode.mode);
+                }
+
+                // LSR (logical shift right)
+                // performed on the accumulator
+                0x4a => self.lsr_accumulator(),
+                // performed on a memory held value
+                0x46 | 0x56 | 0x4e | 0x5e => {
+                    self.lsr(&opcode.mode);
+                }
+
+                // ROL (rotate left)
+                // performed on the accumulator
+                0x2a => self.rol_accumulator(),
+                // performed on a memory held value
+                0x26 | 0x36 | 0x2e | 0x3e => {
+                    self.rol(&opcode.mode);
+                }
+
+                // ROR (rotate right)
+                // performed on the accumulator
+                0x6a => self.ror_accumulator(),
+                // performed on a memory held value
+                0x66 | 0x76 | 0x6e | 0x7e => {
+                    self.ror(&opcode.mode);
                 }
 
                 // CMP (compare register A with memory)
@@ -664,6 +789,7 @@ impl CPU {
                 0x28 => self.plp(),          // PLP (pull processor status from stack)
                 0x9a => self.txs(),          // TXS (transfer register X to stack pointer)
                 0xba => self.tsx(),          // TSX (transfer stack pointer to register X)
+                0x40 => self.rti(),          // RTI (return from interrupt)
                 0xea => {}                   // NOP (do nothing, only increment program counter)
                 0x00 => return,              // BRK (stop execution)
                 _ => unimplemented!(
@@ -1752,6 +1878,94 @@ mod test {
             "A should be 0x42 after returning from subroutine"
         );
         assert_eq!(cpu.stack_pointer, 0xFD, "SP should return to initial 0xFD");
+    }
+
+    // ----- ASL, LSR, ROL, ROR (shifts & rotates) -----
+
+    // ASL (0x0A): arithmetic shift left, C = bit 7, result <<= 1
+    #[test]
+    fn test_asl_accumulator_shifts_left_and_sets_carry() {
+        let mut cpu = CPU::new();
+        // LDA #$80; ASL A; BRK
+        cpu.load_and_run(vec![0xa9, 0x80, 0x0a, 0x00]);
+        assert_eq!(cpu.register_a, 0x00, "$80 << 1 = $00 (truncated)");
+        assert!(cpu.status.contains(CPUFlags::CARRY), "C = bit 7 of $80");
+        assert!(cpu.status.contains(CPUFlags::ZERO), "result is 0");
+        assert!(
+            !cpu.status.contains(CPUFlags::NEGATIVE),
+            "bit 7 of result is 0"
+        );
+    }
+
+    // LSR (0x4A): logical shift right, C = bit 0, result >>= 1
+    #[test]
+    fn test_lsr_accumulator_shifts_right_and_sets_carry() {
+        let mut cpu = CPU::new();
+        // LDA #$01; LSR A; BRK
+        cpu.load_and_run(vec![0xa9, 0x01, 0x4a, 0x00]);
+        assert_eq!(cpu.register_a, 0x00, "$01 >> 1 = $00");
+        assert!(cpu.status.contains(CPUFlags::CARRY), "C = bit 0 of $01");
+        assert!(cpu.status.contains(CPUFlags::ZERO), "result is 0");
+        assert!(
+            !cpu.status.contains(CPUFlags::NEGATIVE),
+            "bit 7 of result is 0"
+        );
+    }
+
+    // ROL (0x2A): rotate left through carry, C → bit 0, bit 7 → C
+    #[test]
+    fn test_rol_accumulator_rotates_left_through_carry() {
+        let mut cpu = CPU::new();
+        // SEC; LDA #$80; ROL A; BRK
+        cpu.load_and_run(vec![0x38, 0xa9, 0x80, 0x2a, 0x00]);
+        // A = ($80 << 1) | 1 (carry-in) = $01
+        // C = bit 7 of $80 = 1
+        assert_eq!(cpu.register_a, 0x01);
+        assert!(cpu.status.contains(CPUFlags::CARRY));
+        assert!(!cpu.status.contains(CPUFlags::ZERO));
+        assert!(!cpu.status.contains(CPUFlags::NEGATIVE));
+    }
+
+    // ROR (0x6A): rotate right through carry, C → bit 7, bit 0 → C
+    #[test]
+    fn test_ror_accumulator_rotates_right_through_carry() {
+        let mut cpu = CPU::new();
+        // SEC; LDA #$01; ROR A; BRK
+        cpu.load_and_run(vec![0x38, 0xa9, 0x01, 0x6a, 0x00]);
+        // A = ($01 >> 1) | ($80 carry-in) = $80
+        // C = bit 0 of $01 = 1
+        assert_eq!(cpu.register_a, 0x80);
+        assert!(cpu.status.contains(CPUFlags::CARRY));
+        assert!(!cpu.status.contains(CPUFlags::ZERO));
+        assert!(cpu.status.contains(CPUFlags::NEGATIVE));
+    }
+
+    // ----- RTI (Return from Interrupt) -----
+
+    // RTI ($40): pop status then PC (16-bit, no +1) from stack.
+    // Equivalent to PLP followed by a RTS that doesn't add 1.
+
+    #[test]
+    fn test_rti_restores_status_and_pc_from_stack() {
+        let mut cpu = CPU::new();
+        // Simulate stack state after a BRK/IRQ would have pushed it:
+        //   push PC high | push PC low | push status
+        // We manually pre-write the stack and use TXS to set SP.
+        cpu.mem_write(0x01FA, 0b00100101); // status with C=1
+        cpu.mem_write(0x01FB, 0x04); // PC low = $04
+        cpu.mem_write(0x01FC, 0x80); // PC high = $80
+        // LDX #$F9; TXS (SP=$F9); RTI
+        // After RTI: SP=$FC, PC=$8004, then BRK at $8004 halts
+        cpu.load_and_run(vec![0xa2, 0xf9, 0x9a, 0x40]);
+        assert_eq!(
+            cpu.program_counter, 0x8005,
+            "RTI returns to $8004 (BRK), which halts at $8005"
+        );
+        assert_eq!(cpu.stack_pointer, 0xFC, "SP after 3 pops from $F9");
+        assert!(
+            cpu.status.contains(CPUFlags::CARRY),
+            "C flag restored from pushed status"
+        );
     }
 
     // ----- Integration -----

@@ -33,6 +33,8 @@ pub static CPU_OPCODES: &[OpCode] = &[
     OpCode::new(0x00, "BRK", 1, 7, AddressingMode::NoneAddressing),
     // NOP (do nothing, only increment program counter)
     OpCode::new(0xea, "NOP", 1, 2, AddressingMode::NoneAddressing),
+    // RTI (return from interrupt)
+    OpCode::new(0x40, "RTI", 1, 6, AddressingMode::NoneAddressing),
     // SEC (set carry flag)
     OpCode::new(0x38, "SEC", 1, 2, AddressingMode::NoneAddressing),
     // CLC (clear carry flag)
@@ -174,6 +176,30 @@ pub static CPU_OPCODES: &[OpCode] = &[
     OpCode::new(0x59, "EOR", 3, 4, AddressingMode::Absolute_Y), // page crossed -> 5
     OpCode::new(0x41, "EOR", 2, 6, AddressingMode::Indirect_X),
     OpCode::new(0x51, "EOR", 2, 5, AddressingMode::Indirect_Y), // page crossed -> 6
+    // ASL (arithmetic shift left)
+    OpCode::new(0x0a, "ASL", 1, 2, AddressingMode::NoneAddressing), // accumulator
+    OpCode::new(0x06, "ASL", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0x16, "ASL", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0x0e, "ASL", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0x1e, "ASL", 3, 7, AddressingMode::Absolute_X),
+    // LSR (logical shift right)
+    OpCode::new(0x4a, "LSR", 1, 2, AddressingMode::NoneAddressing), // accumulator
+    OpCode::new(0x46, "LSR", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0x56, "LSR", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0x4e, "LSR", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0x5e, "LSR", 3, 7, AddressingMode::Absolute_X),
+    // ROL (rotate left)
+    OpCode::new(0x2a, "ROL", 1, 2, AddressingMode::NoneAddressing), // accumulator
+    OpCode::new(0x26, "ROL", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0x36, "ROL", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0x2e, "ROL", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0x3e, "ROL", 3, 7, AddressingMode::Absolute_X),
+    // ROR (rotate right)
+    OpCode::new(0x6a, "ROR", 1, 2, AddressingMode::NoneAddressing), // accumulator
+    OpCode::new(0x66, "ROR", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0x76, "ROR", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0x6e, "ROR", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0x7e, "ROR", 3, 7, AddressingMode::Absolute_X),
     // CMP (compare register A with memory)
     OpCode::new(0xc9, "CMP", 2, 2, AddressingMode::Immediate),
     OpCode::new(0xc5, "CMP", 2, 3, AddressingMode::ZeroPage),
