@@ -15,6 +15,7 @@ use crate::bus::Bus;
 use crate::cartridge::Rom;
 use crate::cpu::CPU;
 use crate::cpu::Mem;
+use crate::trace::trace;
 
 fn handle_user_input(cpu: &mut CPU, event_pump: &mut EventPump) {
     for event in event_pump.poll_iter() {
@@ -118,15 +119,16 @@ fn main() {
 
     // Run the game cycle
     cpu.run_with_callback(move |cpu| {
-        handle_user_input(cpu, &mut event_pump);
-        cpu.mem_write(0xfe, rng.random_range(1..16));
-
-        if read_screen_state(cpu, &mut screen_state) {
-            texture.update(None, &screen_state, 32 * 3).unwrap();
-            canvas.copy(&texture, None, None).unwrap();
-            canvas.present();
-        }
-
-        std::thread::sleep(std::time::Duration::new(0, 100_000));
+        println!("{}", trace(cpu))
+        // handle_user_input(cpu, &mut event_pump);
+        // cpu.mem_write(0xfe, rng.random_range(1..16));
+        //
+        // if read_screen_state(cpu, &mut screen_state) {
+        //     texture.update(None, &screen_state, 32 * 3).unwrap();
+        //     canvas.copy(&texture, None, None).unwrap();
+        //     canvas.present();
+        // }
+        //
+        // std::thread::sleep(std::time::Duration::new(0, 100_000));
     });
 }
