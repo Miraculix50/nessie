@@ -1,7 +1,7 @@
-mod bus;
-
-mod cpu;
-mod opcodes;
+pub mod bus;
+pub mod cartridge;
+pub mod cpu;
+pub mod opcodes;
 
 use rand::RngExt;
 use sdl2::EventPump;

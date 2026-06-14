@@ -1,5 +1,5 @@
 const NES_TAG: [u8; 4] = [0x4e, 0x45, 0x53, 0x1a];
-const PRG_ROM_PAGE_SIZE: usize = 16348;
+const PRG_ROM_PAGE_SIZE: usize = 16384;
 const CHR_ROM_PAGE_SIZE: usize = 8192;
 
 #[derive(Debug, PartialEq)]
@@ -38,7 +38,7 @@ impl Rom {
         };
 
         let prg_rom_size = raw[4] as usize * PRG_ROM_PAGE_SIZE;
-        let chr_rom_size = raw[5] as usize * PRG_ROM_PAGE_SIZE;
+        let chr_rom_size = raw[5] as usize * CHR_ROM_PAGE_SIZE;
 
         let trainer_present = raw[6] & 0b100 != 0;
 
