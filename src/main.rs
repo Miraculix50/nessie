@@ -113,6 +113,7 @@ fn main() {
     let bus = Bus::new(rom);
     let mut cpu = CPU::new(bus);
     cpu.reset();
+    cpu.program_counter = 0xC000;
 
     let mut screen_state = [0 as u8; 32 * 3 * 32];
     let mut rng = rand::rng();
