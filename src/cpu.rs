@@ -106,40 +106,38 @@ impl CPU {
         }
     }
 
-    fn get_operand_address(&mut self, mode: &AddressingMode) -> u16 {
+    pub fn get_absolute_address(&self, mode: &AddressingMode, addr: u16) -> u16 {
         match mode {
-            AddressingMode::Immediate => self.program_counter,
+            AddressingMode::ZeroPage => self.mem_read(addr) as u16,
 
-            AddressingMode::ZeroPage => self.mem_read(self.program_counter) as u16,
-
-            AddressingMode::Absolute => self.mem_read_u16(self.program_counter),
+            AddressingMode::Absolute => self.mem_read_u16(addr),
 
             AddressingMode::ZeroPage_X => {
-                let pos = self.mem_read(self.program_counter);
+                let pos = self.mem_read(addr);
                 let addr = pos.wrapping_add(self.register_x) as u16;
                 addr
             }
 
             AddressingMode::ZeroPage_Y => {
-                let pos = self.mem_read(self.program_counter);
+                let pos = self.mem_read(addr);
                 let addr = pos.wrapping_add(self.register_y) as u16;
                 addr
             }
 
             AddressingMode::Absolute_X => {
-                let base = self.mem_read_u16(self.program_counter);
+                let base = self.mem_read_u16(addr);
                 let addr = base.wrapping_add(self.register_x as u16);
                 addr
             }
 
             AddressingMode::Absolute_Y => {
-                let base = self.mem_read_u16(self.program_counter);
+                let base = self.mem_read_u16(addr);
                 let addr = base.wrapping_add(self.register_y as u16);
                 addr
             }
 
             AddressingMode::Indirect_X => {
-                let base = self.mem_read(self.program_counter);
+                let base = self.mem_read(addr);
 
                 let ptr: u8 = (base as u8).wrapping_add(self.register_x);
                 let lo = self.mem_read(ptr as u16);
@@ -148,7 +146,7 @@ impl CPU {
             }
 
             AddressingMode::Indirect_Y => {
-                let base = self.mem_read(self.program_counter);
+                let base = self.mem_read(addr);
 
                 let lo = self.mem_read(base as u16);
                 let hi = self.mem_read((base as u8).wrapping_add(1) as u16);
@@ -157,9 +155,16 @@ impl CPU {
                 deref
             }
 
-            AddressingMode::NoneAddressing => {
+            _ => {
                 panic!("mode {:?} is not supported", mode);
             }
+        }
+    }
+
+    fn get_operand_address(&self, mode: &AddressingMode) -> u16 {
+        match mode {
+            AddressingMode::Immediate => self.program_counter,
+            _ => self.get_absolute_address(&mode, self.program_counter),
         }
     }
 
@@ -203,6 +208,27 @@ impl CPU {
         self.status.set(CPUFlags::OVERFLOW, v); // Set V flag if signed result overflowed
 
         self.set_register_a(result_u8);
+    }
+
+    /// Helper function to perform a subtraction on register A
+    /// Uses [`add_to_register_a()`] internally
+    fn sub_from_register_a(&mut self, value: u8) {
+        self.add_to_register_a(value ^ 0xFF);
+    }
+
+    /// Helper function to perform an AND with register A
+    fn and_with_register_a(&mut self, value: u8) {
+        self.set_register_a(value & self.register_a);
+    }
+
+    /// Helper function to perform an XOR with register A
+    fn xor_with_register_a(&mut self, value: u8) {
+        self.set_register_a(value ^ self.register_a);
+    }
+
+    /// Helper function to perform an OR with register A
+    fn or_with_register_a(&mut self, value: u8) {
+        self.set_register_a(value | self.register_a);
     }
 
     /// General function for branch opcodes
@@ -564,7 +590,7 @@ impl CPU {
     fn sbc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
-        self.add_to_register_a(value ^ 0xFF);
+        self.sub_from_register_a(value);
     }
 
     /// BIT (test if bits are set in memory)
@@ -897,7 +923,9 @@ mod test {
 
     #[test]
     fn test_lda_zero_page_x_with_wrap() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x02, 0xaa, 0xb5, 0xff, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x02, 0xaa, 0xb5, 0xff, 0x00,
+        ])));
         cpu.mem_write(0x01, 0x42);
         // LDA #$02; TAX; LDA $FF,X  -> 0xFF + 2 wraps to 0x01
         cpu.run();
@@ -914,7 +942,9 @@ mod test {
 
     #[test]
     fn test_lda_absolute_x() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x02, 0xaa, 0xbd, 0x34, 0x12, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x02, 0xaa, 0xbd, 0x34, 0x12, 0x00,
+        ])));
         cpu.mem_write(0x1236, 0x42);
         // LDA #$02; TAX; LDA $1234,X
         cpu.run();
@@ -933,7 +963,9 @@ mod test {
 
     #[test]
     fn test_lda_indirect_x_with_wrap() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x02, 0xaa, 0xa1, 0xfe, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x02, 0xaa, 0xa1, 0xfe, 0x00,
+        ])));
         // Pointer at zero-page 0x00/0x01 -> effective address 0x1234
         cpu.mem_write(0x00, 0x34);
         cpu.mem_write(0x01, 0x12);
@@ -1003,7 +1035,9 @@ mod test {
 
     #[test]
     fn test_ldx_zero_page_y_with_wrap() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x02, 0xa8, 0xb6, 0xff, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x02, 0xa8, 0xb6, 0xff, 0x00,
+        ])));
         cpu.mem_write(0x01, 0x42);
         // LDA #$02; TAY; LDX $FF,Y  -> 0xFF + 2 wraps to 0x01
         cpu.run();
@@ -1023,7 +1057,9 @@ mod test {
 
     #[test]
     fn test_stx_writes_x_to_memory() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xaa, 0x86, 0x10, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x42, 0xaa, 0x86, 0x10, 0x00,
+        ])));
         // LDA #$42; TAX; STX $10; BRK
         // TAX is needed because X starts at 0 after reset — without it we could
         // not distinguish a working STX from a broken one that writes 0.
@@ -1035,7 +1071,9 @@ mod test {
 
     #[test]
     fn test_sty_writes_y_to_memory() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xa8, 0x84, 0x10, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x42, 0xa8, 0x84, 0x10, 0x00,
+        ])));
         // LDA #$42; TAY; STY $10; BRK
         // TAY is needed because Y starts at 0 after reset — without it we could
         // not distinguish a working STY from a broken one that writes 0.
@@ -1106,7 +1144,9 @@ mod test {
 
     #[test]
     fn test_cmp_less_than_with_carry_set_clears_c() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x00, 0xc9, 0x01, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0x38, 0xa9, 0x00, 0xc9, 0x01, 0x00,
+        ])));
         // SEC first so C starts at 1: a buggy CMP that fails to update C
         // (or sets it backwards) would fail the final C==0 assertion.
         // Then LDA #$00; CMP #$01 -> 0 - 1 = 0xFF (borrow), so C=0, Z=0, N=1.
@@ -1154,7 +1194,9 @@ mod test {
 
     #[test]
     fn test_adc_adds_carry_in() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x05, 0x69, 0x03, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0x38, 0xa9, 0x05, 0x69, 0x03, 0x00,
+        ])));
         // SEC; LDA #$05; ADC #$03 -> 5 + 3 + 1 = 9.
         // A buggy ADC that ignored the carry-in would produce 8, not 9.
         cpu.run();
@@ -1220,7 +1262,9 @@ mod test {
 
     #[test]
     fn test_sbc_basic_subtract_no_borrow_in() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x05, 0xe9, 0x03, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0x38, 0xa9, 0x05, 0xe9, 0x03, 0x00,
+        ])));
         // SEC; LDA #$05; SBC #$03 -> 5 - 3 - 0 = 2, no borrow anywhere.
         cpu.run();
         assert_eq!(cpu.register_a, 0x02);
@@ -1241,7 +1285,9 @@ mod test {
 
     #[test]
     fn test_sbc_subtracts_borrow_in() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x18, 0xa9, 0x05, 0xe9, 0x03, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0x18, 0xa9, 0x05, 0xe9, 0x03, 0x00,
+        ])));
         // CLC; LDA #$05; SBC #$03 -> 5 - 3 - 1 = 1.
         // A buggy SBC that ignored the carry-in would produce 2, not 1.
         cpu.run();
@@ -1258,7 +1304,9 @@ mod test {
 
     #[test]
     fn test_sbc_underflow_clears_c_and_sets_n() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x00, 0xe9, 0x01, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0x38, 0xa9, 0x00, 0xe9, 0x01, 0x00,
+        ])));
         // SEC; LDA #$00; SBC #$01 -> 0 - 1 - 0 = 0xFF (borrow occurred).
         // V should be clear: 0 - 1 = -1, which is valid in signed 8-bit.
         cpu.run();
@@ -1280,7 +1328,9 @@ mod test {
 
     #[test]
     fn test_sbc_signed_overflow_sets_v() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x80, 0xe9, 0x01, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0x38, 0xa9, 0x80, 0xe9, 0x01, 0x00,
+        ])));
         // SEC; LDA #$80; SBC #$01 -> 0x80 - 0x01 - 0 = 0x7F.
         // In signed: (-128) - (+1) = -129, which doesn't fit in 8-bit signed,
         // so signed overflow occurred and V must be set.
@@ -1405,7 +1455,9 @@ mod test {
 
     #[test]
     fn test_clv_clears_overflow_flag() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x50, 0x69, 0x50, 0xb8, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x50, 0x69, 0x50, 0xb8, 0x00,
+        ])));
         // LDA #$50; ADC #$50 -> V=1 (signed overflow), then CLV -> V=0.
         // N and Z should be unchanged by CLV (proving it's not a sledgehammer
         // that clears the whole status register).
@@ -1442,7 +1494,9 @@ mod test {
 
     #[test]
     fn test_txa_transfers_x_to_a() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xaa, 0xa9, 0x00, 0x8a, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x42, 0xaa, 0xa9, 0x00, 0x8a, 0x00,
+        ])));
         // LDA #$42; TAX; LDA #$00; TXA; BRK
         // A is overwritten between TAX and TXA so the assertion proves X -> A actually happened.
         cpu.run();
@@ -1451,7 +1505,9 @@ mod test {
 
     #[test]
     fn test_tya_transfers_y_to_a() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xa8, 0xa9, 0x00, 0x98, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x42, 0xa8, 0xa9, 0x00, 0x98, 0x00,
+        ])));
         // LDA #$42; TAY; LDA #$00; TYA; BRK
         // A is overwritten between TAY and TYA so the assertion proves Y -> A actually happened.
         cpu.run();
@@ -1700,7 +1756,9 @@ mod test {
 
     #[test]
     fn test_bvc_does_not_branch_when_overflow_set() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x50, 0x69, 0x50, 0x50, 0x02, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x50, 0x69, 0x50, 0x50, 0x02, 0x00,
+        ])));
         // LDA #$50; ADC #$50 sets V=1, BVC falls through.
         cpu.run();
         assert_eq!(cpu.program_counter, 0x8007);
@@ -1708,7 +1766,9 @@ mod test {
 
     #[test]
     fn test_bvs_branches_when_overflow_set() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x50, 0x69, 0x50, 0x70, 0x02, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x50, 0x69, 0x50, 0x70, 0x02, 0x00,
+        ])));
         // LDA #$50; ADC #$50 sets V=1, BVS branches over BRK.
         cpu.run();
         assert_eq!(cpu.program_counter, 0x8009);
@@ -1816,7 +1876,9 @@ mod test {
 
     #[test]
     fn test_pla_round_trip_restores_a_and_sp() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0x48, 0xa9, 0x00, 0x68, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa9, 0x42, 0x48, 0xa9, 0x00, 0x68, 0x00,
+        ])));
         // LDA #$42; PHA; LDA #$00; PLA; BRK
         cpu.run();
         assert_eq!(cpu.register_a, 0x42, "A should be restored from stack");
@@ -1857,7 +1919,9 @@ mod test {
 
     #[test]
     fn test_tsx_transfers_stack_pointer_to_x() {
-        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa2, 0x42, 0x9a, 0xa2, 0x00, 0xba, 0x00])));
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0xa2, 0x42, 0x9a, 0xa2, 0x00, 0xba, 0x00,
+        ])));
         // LDX #$42; TXS (SP=0x42); LDX #$00 (clobber X); TSX (X=SP); BRK
         cpu.run();
         assert_eq!(cpu.register_x, 0x42, "X should be restored from SP");

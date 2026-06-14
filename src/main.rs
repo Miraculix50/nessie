@@ -2,6 +2,7 @@ pub mod bus;
 pub mod cartridge;
 pub mod cpu;
 pub mod opcodes;
+pub mod trace;
 
 use rand::RngExt;
 use sdl2::EventPump;
@@ -105,7 +106,7 @@ fn main() {
         .unwrap();
 
     // Load the game
-    let bytes: Vec<u8> = std::fs::read("roms/snake.nes").unwrap();
+    let bytes: Vec<u8> = std::fs::read("roms/nestest.nes").unwrap();
     let rom = Rom::new(&bytes).unwrap();
 
     let bus = Bus::new(rom);
