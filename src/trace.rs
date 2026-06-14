@@ -1,5 +1,3 @@
-use std::fmt::format;
-
 use crate::cpu::AddressingMode;
 use crate::cpu::CPU;
 use crate::cpu::Mem;
