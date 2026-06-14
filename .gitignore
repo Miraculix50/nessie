@@ -4,4 +4,4 @@
 .DS_Store
 
 # ROM files
-*.nes
+/roms
