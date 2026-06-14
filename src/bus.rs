@@ -29,6 +29,15 @@ impl Bus {
         }
         self.rom.prg_rom[addr as usize]
     }
+
+    pub fn set_reset_vector(&mut self, addr: u16) {
+        self.rom.prg_rom[0x7FFC] = (addr & 0xFF) as u8;
+        self.rom.prg_rom[0x7FFD] = (addr >> 8) as u8;
+    }
+
+    pub fn write_prg_rom(&mut self, addr: u16, data: u8) {
+        self.rom.prg_rom[(addr - 0x8000) as usize] = data;
+    }
 }
 
 impl Mem for Bus {

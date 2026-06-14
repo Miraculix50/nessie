@@ -94,15 +94,15 @@ impl Mem for CPU {
 }
 
 impl CPU {
-    pub fn new() -> Self {
+    pub fn new(bus: Bus) -> Self {
         CPU {
             register_a: 0,
             register_x: 0,
             register_y: 0,
             status: CPUFlags::from_bits_truncate(0b00100100), // Set BREAK2 and INTERRUPT_DISABLE
-            program_counter: 0,
+            program_counter: 0x8000,
             stack_pointer: STACK_RESET,
-            bus: Bus::new(),
+            bus: bus,
         }
     }
 
@@ -614,17 +614,11 @@ impl CPU {
         self.set_register_x(self.stack_pointer);
     }
 
-    pub fn load_and_run(&mut self, program: Vec<u8>) {
-        self.load(program);
-        self.reset();
-        self.run();
-    }
-
     pub fn load(&mut self, program: Vec<u8>) {
         for i in 0..(program.len() as u16) {
-            self.mem_write(0x0000 + i, program[i as usize]);
+            self.bus.write_prg_rom(0x8000 + i, program[i as usize]);
         }
-        self.mem_write(0xFFFC, 0x0000);
+        self.bus.set_reset_vector(0x8000);
     }
 
     pub fn reset(&mut self) {
@@ -829,19 +823,20 @@ impl CPU {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::cartridge::test;
 
     // ----- Memory primitives (Mem trait) -----
 
     #[test]
     fn test_mem_read_write() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x00])));
         cpu.mem_write(0x1234, 0x42);
         assert_eq!(cpu.mem_read(0x1234), 0x42);
     }
 
     #[test]
     fn test_mem_read_write_u16_little_endian() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x00])));
         cpu.mem_write_u16(0x1234, 0xBEEF);
         assert_eq!(cpu.mem_read(0x1234), 0xEF);
         assert_eq!(cpu.mem_read(0x1235), 0xBE);
@@ -852,12 +847,12 @@ mod test {
 
     #[test]
     fn test_reset_clears_registers_and_loads_pc() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x00])));
         cpu.register_a = 0xFF;
         cpu.register_x = 0xFF;
         cpu.register_y = 0xFF;
         cpu.status = CPUFlags::from_bits_truncate(0xFF);
-        cpu.mem_write_u16(0xFFFC, 0x8000);
+        cpu.bus.set_reset_vector(0x8000);
 
         cpu.reset();
 
@@ -874,7 +869,7 @@ mod test {
 
     #[test]
     fn test_load_places_program_at_0x8000_and_sets_reset_vector() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x00])));
         cpu.load(vec![0xa9, 0x42, 0x00]);
 
         assert_eq!(cpu.mem_read(0x8000), 0xa9);
@@ -887,52 +882,50 @@ mod test {
 
     #[test]
     fn test_lda_immediate() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0x42, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0x00])));
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42);
     }
 
     #[test]
     fn test_lda_zero_page() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa5, 0x10, 0x00])));
         cpu.mem_write(0x10, 0x42);
-        cpu.load_and_run(vec![0xa5, 0x10, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42);
     }
 
     #[test]
     fn test_lda_zero_page_x_with_wrap() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x02, 0xaa, 0xb5, 0xff, 0x00])));
         cpu.mem_write(0x01, 0x42);
         // LDA #$02; TAX; LDA $FF,X  -> 0xFF + 2 wraps to 0x01
-        cpu.load_and_run(vec![0xa9, 0x02, 0xaa, 0xb5, 0xff, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42);
     }
 
     #[test]
     fn test_lda_absolute() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xad, 0x34, 0x12, 0x00])));
         cpu.mem_write(0x1234, 0x42);
-        cpu.load_and_run(vec![0xad, 0x34, 0x12, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42);
     }
 
     #[test]
     fn test_lda_absolute_x() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x02, 0xaa, 0xbd, 0x34, 0x12, 0x00])));
         cpu.mem_write(0x1236, 0x42);
         // LDA #$02; TAX; LDA $1234,X
-        cpu.load_and_run(vec![0xa9, 0x02, 0xaa, 0xbd, 0x34, 0x12, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42);
     }
 
     #[test]
     fn test_lda_absolute_y() {
         // No LDY/TAY instruction exists yet, so set register_y manually after reset.
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xb9, 0x34, 0x12, 0x00])));
         cpu.mem_write(0x1236, 0x42);
-        cpu.load(vec![0xb9, 0x34, 0x12, 0x00]);
-        cpu.reset();
         cpu.register_y = 0x02;
         cpu.run();
         assert_eq!(cpu.register_a, 0x42);
@@ -940,25 +933,23 @@ mod test {
 
     #[test]
     fn test_lda_indirect_x_with_wrap() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x02, 0xaa, 0xa1, 0xfe, 0x00])));
         // Pointer at zero-page 0x00/0x01 -> effective address 0x1234
         cpu.mem_write(0x00, 0x34);
         cpu.mem_write(0x01, 0x12);
         cpu.mem_write(0x1234, 0x42);
         // LDA #$02; TAX; LDA ($FE,X)  -> 0xFE + 2 wraps to 0x00
-        cpu.load_and_run(vec![0xa9, 0x02, 0xaa, 0xa1, 0xfe, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42);
     }
 
     #[test]
     fn test_lda_indirect_y() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xb1, 0x10, 0x00])));
         // Pointer at zero-page 0x10/0x11 -> base 0x1234, +Y(2) = 0x1236
         cpu.mem_write(0x10, 0x34);
         cpu.mem_write(0x11, 0x12);
         cpu.mem_write(0x1236, 0x42);
-        cpu.load(vec![0xb1, 0x10, 0x00]);
-        cpu.reset();
         cpu.register_y = 0x02;
         cpu.run();
         assert_eq!(cpu.register_a, 0x42);
@@ -968,8 +959,8 @@ mod test {
 
     #[test]
     fn test_lda_sets_zero_flag_when_zero() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0x00, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x00, 0x00])));
+        cpu.run();
         assert!(cpu.status.contains(CPUFlags::ZERO), "Z flag should be set");
         assert!(
             !cpu.status.contains(CPUFlags::NEGATIVE),
@@ -979,8 +970,8 @@ mod test {
 
     #[test]
     fn test_lda_sets_negative_flag_when_high_bit_set() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0x80, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x80, 0x00])));
+        cpu.run();
         assert!(
             cpu.status.contains(CPUFlags::NEGATIVE),
             "N flag should be set"
@@ -995,9 +986,9 @@ mod test {
 
     #[test]
     fn test_sta_writes_a_to_memory() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0x85, 0x10, 0x00])));
         // LDA #$42; STA $10
-        cpu.load_and_run(vec![0xa9, 0x42, 0x85, 0x10, 0x00]);
+        cpu.run();
         assert_eq!(cpu.mem_read(0x10), 0x42);
     }
 
@@ -1005,17 +996,17 @@ mod test {
 
     #[test]
     fn test_ldx_immediate() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa2, 0x42, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa2, 0x42, 0x00])));
+        cpu.run();
         assert_eq!(cpu.register_x, 0x42);
     }
 
     #[test]
     fn test_ldx_zero_page_y_with_wrap() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x02, 0xa8, 0xb6, 0xff, 0x00])));
         cpu.mem_write(0x01, 0x42);
         // LDA #$02; TAY; LDX $FF,Y  -> 0xFF + 2 wraps to 0x01
-        cpu.load_and_run(vec![0xa9, 0x02, 0xa8, 0xb6, 0xff, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_x, 0x42);
     }
 
@@ -1023,8 +1014,8 @@ mod test {
 
     #[test]
     fn test_ldy_immediate() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa0, 0x42, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa0, 0x42, 0x00])));
+        cpu.run();
         assert_eq!(cpu.register_y, 0x42);
     }
 
@@ -1032,11 +1023,11 @@ mod test {
 
     #[test]
     fn test_stx_writes_x_to_memory() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xaa, 0x86, 0x10, 0x00])));
         // LDA #$42; TAX; STX $10; BRK
         // TAX is needed because X starts at 0 after reset — without it we could
         // not distinguish a working STX from a broken one that writes 0.
-        cpu.load_and_run(vec![0xa9, 0x42, 0xaa, 0x86, 0x10, 0x00]);
+        cpu.run();
         assert_eq!(cpu.mem_read(0x10), 0x42);
     }
 
@@ -1044,11 +1035,11 @@ mod test {
 
     #[test]
     fn test_sty_writes_y_to_memory() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xa8, 0x84, 0x10, 0x00])));
         // LDA #$42; TAY; STY $10; BRK
         // TAY is needed because Y starts at 0 after reset — without it we could
         // not distinguish a working STY from a broken one that writes 0.
-        cpu.load_and_run(vec![0xa9, 0x42, 0xa8, 0x84, 0x10, 0x00]);
+        cpu.run();
         assert_eq!(cpu.mem_read(0x10), 0x42);
     }
 
@@ -1056,17 +1047,17 @@ mod test {
 
     #[test]
     fn test_sec_sets_carry_flag() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0x00])));
         // C starts at 0 after reset; SEC must set bit 0 of the status register.
-        cpu.load_and_run(vec![0x38, 0x00]);
+        cpu.run();
         assert!(cpu.status.contains(CPUFlags::CARRY), "C flag should be set");
     }
 
     #[test]
     fn test_clc_clears_carry_flag() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0x18, 0x00])));
         // SEC; CLC; BRK -- C is set then cleared, exercising both transitions.
-        cpu.load_and_run(vec![0x38, 0x18, 0x00]);
+        cpu.run();
         assert!(
             !cpu.status.contains(CPUFlags::CARRY),
             "C flag should be clear"
@@ -1077,12 +1068,12 @@ mod test {
 
     #[test]
     fn test_and_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0xaa, 0x29, 0x55, 0x00])));
         // LDA #$AA; AND #$55 -> 0xAA & 0x55 = 0x00, Z flag must be set.
         // This single test exercises: opcode wiring, the AND operation, storing
         // the result back into A, and Z-flag handling (a buggy AND that forgot
         // to call update_zero_and_negative_flags would fail the Z assertion).
-        cpu.load_and_run(vec![0xa9, 0xaa, 0x29, 0x55, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x00);
         assert!(
             cpu.status.contains(CPUFlags::ZERO),
@@ -1098,10 +1089,10 @@ mod test {
 
     #[test]
     fn test_cmp_equal_sets_z_and_c() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x05, 0xc9, 0x05, 0x00])));
         // LDA #$05; CMP #$05 -> A - M = 0, so Z=1, C=1 (A >= M).
         // Register A must be unchanged (CMP is a side-effect-free comparison).
-        cpu.load_and_run(vec![0xa9, 0x05, 0xc9, 0x05, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x05, "CMP must not modify A");
         assert!(
             cpu.status.contains(CPUFlags::CARRY | CPUFlags::ZERO),
@@ -1115,11 +1106,11 @@ mod test {
 
     #[test]
     fn test_cmp_less_than_with_carry_set_clears_c() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x00, 0xc9, 0x01, 0x00])));
         // SEC first so C starts at 1: a buggy CMP that fails to update C
         // (or sets it backwards) would fail the final C==0 assertion.
         // Then LDA #$00; CMP #$01 -> 0 - 1 = 0xFF (borrow), so C=0, Z=0, N=1.
-        cpu.load_and_run(vec![0x38, 0xa9, 0x00, 0xc9, 0x01, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x00, "CMP must not modify A");
         assert!(
             !cpu.status.contains(CPUFlags::CARRY),
@@ -1145,9 +1136,9 @@ mod test {
 
     #[test]
     fn test_adc_basic_add_no_carry_in() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x05, 0x69, 0x03, 0x00])));
         // C starts at 0 after reset. 5 + 3 = 8, no overflow anywhere.
-        cpu.load_and_run(vec![0xa9, 0x05, 0x69, 0x03, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x08);
         assert!(!cpu.status.contains(CPUFlags::CARRY), "C should be clear");
         assert!(!cpu.status.contains(CPUFlags::ZERO), "Z should be clear");
@@ -1163,10 +1154,10 @@ mod test {
 
     #[test]
     fn test_adc_adds_carry_in() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x05, 0x69, 0x03, 0x00])));
         // SEC; LDA #$05; ADC #$03 -> 5 + 3 + 1 = 9.
         // A buggy ADC that ignored the carry-in would produce 8, not 9.
-        cpu.load_and_run(vec![0x38, 0xa9, 0x05, 0x69, 0x03, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x09, "carry-in must be added");
         assert!(!cpu.status.contains(CPUFlags::CARRY), "C should be clear");
         assert!(
@@ -1177,9 +1168,9 @@ mod test {
 
     #[test]
     fn test_adc_carry_out_sets_c_and_zero_result_sets_z() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0xff, 0x69, 0x01, 0x00])));
         // LDA #$FF; ADC #$01 -> 0xFF + 0x01 = 0x100, so A=0x00, C=1, Z=1.
-        cpu.load_and_run(vec![0xa9, 0xff, 0x69, 0x01, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x00);
         assert!(
             cpu.status.contains(CPUFlags::CARRY),
@@ -1197,11 +1188,11 @@ mod test {
 
     #[test]
     fn test_adc_signed_overflow_sets_v() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x50, 0x69, 0x50, 0x00])));
         // LDA #$50; ADC #$50 -> 0x50 + 0x50 = 0xA0.
         // In signed: (+80) + (+80) = (-96) is an overflow, so V must be set.
         // 0xA0 also has bit 7 set, so N must be set.
-        cpu.load_and_run(vec![0xa9, 0x50, 0x69, 0x50, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0xa0);
         assert!(
             cpu.status.contains(CPUFlags::OVERFLOW),
@@ -1229,9 +1220,9 @@ mod test {
 
     #[test]
     fn test_sbc_basic_subtract_no_borrow_in() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x05, 0xe9, 0x03, 0x00])));
         // SEC; LDA #$05; SBC #$03 -> 5 - 3 - 0 = 2, no borrow anywhere.
-        cpu.load_and_run(vec![0x38, 0xa9, 0x05, 0xe9, 0x03, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x02);
         assert!(
             cpu.status.contains(CPUFlags::CARRY),
@@ -1250,10 +1241,10 @@ mod test {
 
     #[test]
     fn test_sbc_subtracts_borrow_in() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x18, 0xa9, 0x05, 0xe9, 0x03, 0x00])));
         // CLC; LDA #$05; SBC #$03 -> 5 - 3 - 1 = 1.
         // A buggy SBC that ignored the carry-in would produce 2, not 1.
-        cpu.load_and_run(vec![0x18, 0xa9, 0x05, 0xe9, 0x03, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x01, "borrow-in must be subtracted");
         assert!(
             cpu.status.contains(CPUFlags::CARRY),
@@ -1267,10 +1258,10 @@ mod test {
 
     #[test]
     fn test_sbc_underflow_clears_c_and_sets_n() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x00, 0xe9, 0x01, 0x00])));
         // SEC; LDA #$00; SBC #$01 -> 0 - 1 - 0 = 0xFF (borrow occurred).
         // V should be clear: 0 - 1 = -1, which is valid in signed 8-bit.
-        cpu.load_and_run(vec![0x38, 0xa9, 0x00, 0xe9, 0x01, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0xff);
         assert!(
             !cpu.status.contains(CPUFlags::CARRY),
@@ -1289,12 +1280,12 @@ mod test {
 
     #[test]
     fn test_sbc_signed_overflow_sets_v() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x80, 0xe9, 0x01, 0x00])));
         // SEC; LDA #$80; SBC #$01 -> 0x80 - 0x01 - 0 = 0x7F.
         // In signed: (-128) - (+1) = -129, which doesn't fit in 8-bit signed,
         // so signed overflow occurred and V must be set.
         // 0x7F has bit 7 clear, so N must be clear.
-        cpu.load_and_run(vec![0x38, 0xa9, 0x80, 0xe9, 0x01, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x7f);
         assert!(
             cpu.status.contains(CPUFlags::OVERFLOW),
@@ -1315,11 +1306,11 @@ mod test {
 
     #[test]
     fn test_ora_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0xaa, 0x09, 0x55, 0x00])));
         // LDA #$AA; ORA #$55 -> 0xAA | 0x55 = 0xFF, N flag set, Z flag clear.
         // Like AND, this is a direct-mirror pattern: read operand from memory
         // via get_operand_address, OR with A, update flags.
-        cpu.load_and_run(vec![0xa9, 0xaa, 0x09, 0x55, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0xff);
         assert!(
             cpu.status.contains(CPUFlags::NEGATIVE),
@@ -1335,11 +1326,11 @@ mod test {
 
     #[test]
     fn test_eor_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0xaa, 0x49, 0xfe, 0x00])));
         // LDA #$AA; EOR #$FE -> 0xAA ^ 0xFE = 0x54.
         // Picked so the result differs from OR (0xFE) and AND (0xAA),
         // proving XOR is wired and not accidentally aliased to another op.
-        cpu.load_and_run(vec![0xa9, 0xaa, 0x49, 0xfe, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x54);
         assert!(
             !cpu.status.contains(CPUFlags::NEGATIVE),
@@ -1360,8 +1351,8 @@ mod test {
 
     #[test]
     fn test_sed_sets_decimal_flag() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xf8, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xf8, 0x00])));
+        cpu.run();
         assert!(
             cpu.status.contains(CPUFlags::DECIMAL_MODE),
             "D flag should be set"
@@ -1370,9 +1361,9 @@ mod test {
 
     #[test]
     fn test_cld_clears_decimal_flag() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xf8, 0xd8, 0x00])));
         // SED; CLD — exercises both the set and the clear transition.
-        cpu.load_and_run(vec![0xf8, 0xd8, 0x00]);
+        cpu.run();
         assert!(
             !cpu.status.contains(CPUFlags::DECIMAL_MODE),
             "D flag should be clear"
@@ -1387,8 +1378,8 @@ mod test {
 
     #[test]
     fn test_sei_sets_interrupt_flag() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0x78, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x78, 0x00])));
+        cpu.run();
         assert!(
             cpu.status.contains(CPUFlags::INTERRUPT_DISABLE),
             "I flag should be set"
@@ -1397,9 +1388,9 @@ mod test {
 
     #[test]
     fn test_cli_clears_interrupt_flag() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x78, 0x58, 0x00])));
         // SEI; CLI — exercises both transitions.
-        cpu.load_and_run(vec![0x78, 0x58, 0x00]);
+        cpu.run();
         assert!(
             !cpu.status.contains(CPUFlags::INTERRUPT_DISABLE),
             "I flag should be clear"
@@ -1414,11 +1405,11 @@ mod test {
 
     #[test]
     fn test_clv_clears_overflow_flag() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x50, 0x69, 0x50, 0xb8, 0x00])));
         // LDA #$50; ADC #$50 -> V=1 (signed overflow), then CLV -> V=0.
         // N and Z should be unchanged by CLV (proving it's not a sledgehammer
         // that clears the whole status register).
-        cpu.load_and_run(vec![0xa9, 0x50, 0x69, 0x50, 0xb8, 0x00]);
+        cpu.run();
         assert!(
             !cpu.status.contains(CPUFlags::OVERFLOW),
             "V flag should be clear"
@@ -1437,47 +1428,47 @@ mod test {
 
     #[test]
     fn test_tax_transfers_a_to_x() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0x42, 0xaa, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xaa, 0x00])));
+        cpu.run();
         assert_eq!(cpu.register_x, 0x42);
     }
 
     #[test]
     fn test_tay_transfers_a_to_y() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0x42, 0xa8, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xa8, 0x00])));
+        cpu.run();
         assert_eq!(cpu.register_y, 0x42);
     }
 
     #[test]
     fn test_txa_transfers_x_to_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xaa, 0xa9, 0x00, 0x8a, 0x00])));
         // LDA #$42; TAX; LDA #$00; TXA; BRK
         // A is overwritten between TAX and TXA so the assertion proves X -> A actually happened.
-        cpu.load_and_run(vec![0xa9, 0x42, 0xaa, 0xa9, 0x00, 0x8a, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42);
     }
 
     #[test]
     fn test_tya_transfers_y_to_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xa8, 0xa9, 0x00, 0x98, 0x00])));
         // LDA #$42; TAY; LDA #$00; TYA; BRK
         // A is overwritten between TAY and TYA so the assertion proves Y -> A actually happened.
-        cpu.load_and_run(vec![0xa9, 0x42, 0xa8, 0xa9, 0x00, 0x98, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42);
     }
 
     #[test]
     fn test_inx_increments_x() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0x05, 0xaa, 0xe8, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x05, 0xaa, 0xe8, 0x00])));
+        cpu.run();
         assert_eq!(cpu.register_x, 0x06);
     }
 
     #[test]
     fn test_inx_overflow_wraps_to_zero() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0xff, 0xaa, 0xe8, 0x00]);
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0xff, 0xaa, 0xe8, 0x00])));
+        cpu.run();
         assert_eq!(cpu.register_x, 0x00);
         assert!(
             cpu.status.contains(CPUFlags::ZERO),
@@ -1487,17 +1478,17 @@ mod test {
 
     #[test]
     fn test_iny_increments_y() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x05, 0xa8, 0xc8, 0x00])));
         // LDA #$05; TAY; INY; BRK
-        cpu.load_and_run(vec![0xa9, 0x05, 0xa8, 0xc8, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_y, 0x06);
     }
 
     #[test]
     fn test_dex_underflow_wraps_to_0xff() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xca, 0x00])));
         // X starts at 0 after reset; DEX -> 0xFF (underflow), sets N flag.
-        cpu.load_and_run(vec![0xca, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_x, 0xff);
         assert!(
             cpu.status.contains(CPUFlags::NEGATIVE),
@@ -1511,9 +1502,9 @@ mod test {
 
     #[test]
     fn test_dey_decrements_y() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x05, 0xa8, 0x88, 0x00])));
         // LDA #$05; TAY; DEY; BRK
-        cpu.load_and_run(vec![0xa9, 0x05, 0xa8, 0x88, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_y, 0x04);
     }
 
@@ -1521,9 +1512,9 @@ mod test {
 
     #[test]
     fn test_nop_does_nothing() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0xea, 0x00])));
         // LDA #$42; NOP; BRK -- NOP must not modify A
-        cpu.load_and_run(vec![0xa9, 0x42, 0xea, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42);
     }
 
@@ -1531,9 +1522,9 @@ mod test {
 
     #[test]
     fn test_cpx_equal_sets_z_and_c() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa2, 0x42, 0xe0, 0x42, 0x00])));
         // LDX #$42; CPX #$42 -> equal: Z=1, C=1. X must not be modified.
-        cpu.load_and_run(vec![0xa2, 0x42, 0xe0, 0x42, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_x, 0x42, "CPX must not modify X");
         assert!(cpu.status.contains(CPUFlags::ZERO), "Z should be set");
         assert!(cpu.status.contains(CPUFlags::CARRY), "C should be set");
@@ -1545,9 +1536,9 @@ mod test {
 
     #[test]
     fn test_cpy_equal_sets_z_and_c() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa0, 0x42, 0xc0, 0x42, 0x00])));
         // LDY #$42; CPY #$42 -> equal: Z=1, C=1. Y must not be modified.
-        cpu.load_and_run(vec![0xa0, 0x42, 0xc0, 0x42, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_y, 0x42, "CPY must not modify Y");
         assert!(cpu.status.contains(CPUFlags::ZERO), "Z should be set");
         assert!(cpu.status.contains(CPUFlags::CARRY), "C should be set");
@@ -1565,17 +1556,17 @@ mod test {
 
     #[test]
     fn test_inc_increments_memory() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xe6, 0x10, 0x00])));
         cpu.mem_write(0x10, 0x01);
-        cpu.load_and_run(vec![0xe6, 0x10, 0x00]);
+        cpu.run();
         assert_eq!(cpu.mem_read(0x10), 0x02);
     }
 
     #[test]
     fn test_dec_decrements_memory() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xc6, 0x10, 0x00])));
         cpu.mem_write(0x10, 0x02);
-        cpu.load_and_run(vec![0xc6, 0x10, 0x00]);
+        cpu.run();
         assert_eq!(cpu.mem_read(0x10), 0x01);
     }
 
@@ -1590,18 +1581,18 @@ mod test {
 
     #[test]
     fn test_beq_branches_when_zero_set() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x00, 0xf0, 0x02, 0x00])));
         // LDA #$00 -> sets Z=1, then BEQ +2 skips the BRK at 0x8004 and
         // lands on zeroed memory (0x00 = BRK) at 0x8006.
-        cpu.load_and_run(vec![0xa9, 0x00, 0xf0, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8007);
     }
 
     #[test]
     fn test_beq_does_not_branch_when_zero_clear() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xf0, 0x02, 0x00])));
         // Z=0 after reset, so BEQ falls through to BRK at 0x8002.
-        cpu.load_and_run(vec![0xf0, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8003);
     }
 
@@ -1609,17 +1600,17 @@ mod test {
 
     #[test]
     fn test_bne_branches_when_zero_clear() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xd0, 0x02, 0x00])));
         // Z=0 after reset, so BNE branches over the BRK to zeroed memory (BRK).
-        cpu.load_and_run(vec![0xd0, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8005);
     }
 
     #[test]
     fn test_bne_does_not_branch_when_zero_set() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x00, 0xd0, 0x02, 0x00])));
         // LDA #$00 sets Z=1, so BNE falls through to BRK.
-        cpu.load_and_run(vec![0xa9, 0x00, 0xd0, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8005);
     }
 
@@ -1629,33 +1620,33 @@ mod test {
 
     #[test]
     fn test_bpl_branches_when_positive() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x10, 0x02, 0x00])));
         // N=0 after reset, BPL takes the branch over BRK.
-        cpu.load_and_run(vec![0x10, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8005);
     }
 
     #[test]
     fn test_bpl_does_not_branch_when_negative() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x80, 0x10, 0x02, 0x00])));
         // LDA #$80 sets N=1, BPL falls through.
-        cpu.load_and_run(vec![0xa9, 0x80, 0x10, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8005);
     }
 
     #[test]
     fn test_bmi_branches_when_negative() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x80, 0x30, 0x02, 0x00])));
         // LDA #$80 sets N=1, BMI branches over BRK.
-        cpu.load_and_run(vec![0xa9, 0x80, 0x30, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8007);
     }
 
     #[test]
     fn test_bmi_does_not_branch_when_positive() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x30, 0x02, 0x00])));
         // N=0 after reset, BMI falls through.
-        cpu.load_and_run(vec![0x30, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8003);
     }
 
@@ -1665,33 +1656,33 @@ mod test {
 
     #[test]
     fn test_bcc_branches_when_carry_clear() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x90, 0x02, 0x00])));
         // C=0 after reset, BCC takes the branch over BRK.
-        cpu.load_and_run(vec![0x90, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8005);
     }
 
     #[test]
     fn test_bcc_does_not_branch_when_carry_set() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0x90, 0x02, 0x00])));
         // SEC sets C=1, BCC falls through.
-        cpu.load_and_run(vec![0x38, 0x90, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8004);
     }
 
     #[test]
     fn test_bcs_branches_when_carry_set() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xb0, 0x02, 0x00])));
         // SEC sets C=1, BCS branches over BRK.
-        cpu.load_and_run(vec![0x38, 0xb0, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8006);
     }
 
     #[test]
     fn test_bcs_does_not_branch_when_carry_clear() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xb0, 0x02, 0x00])));
         // C=0 after reset, BCS falls through.
-        cpu.load_and_run(vec![0xb0, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8003);
     }
 
@@ -1701,33 +1692,33 @@ mod test {
 
     #[test]
     fn test_bvc_branches_when_overflow_clear() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x50, 0x02, 0x00])));
         // V=0 after reset, BVC takes the branch over BRK.
-        cpu.load_and_run(vec![0x50, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8005);
     }
 
     #[test]
     fn test_bvc_does_not_branch_when_overflow_set() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x50, 0x69, 0x50, 0x50, 0x02, 0x00])));
         // LDA #$50; ADC #$50 sets V=1, BVC falls through.
-        cpu.load_and_run(vec![0xa9, 0x50, 0x69, 0x50, 0x50, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8007);
     }
 
     #[test]
     fn test_bvs_branches_when_overflow_set() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x50, 0x69, 0x50, 0x70, 0x02, 0x00])));
         // LDA #$50; ADC #$50 sets V=1, BVS branches over BRK.
-        cpu.load_and_run(vec![0xa9, 0x50, 0x69, 0x50, 0x70, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8009);
     }
 
     #[test]
     fn test_bvs_does_not_branch_when_overflow_clear() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x70, 0x02, 0x00])));
         // V=0 after reset, BVS falls through.
-        cpu.load_and_run(vec![0x70, 0x02, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8003);
     }
 
@@ -1740,11 +1731,11 @@ mod test {
 
     #[test]
     fn test_bit_sets_n_v_z_flags_from_memory() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x03, 0x24, 0x10, 0x00])));
         // Pre-seed $10 with 0xC0 (bit 7 = 1, bit 6 = 1).
         cpu.mem_write(0x0010, 0xC0);
         // LDA #$03; BIT $10; BRK
-        cpu.load_and_run(vec![0xa9, 0x03, 0x24, 0x10, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x03, "A must not be modified by BIT");
         assert!(
             cpu.status.contains(CPUFlags::NEGATIVE),
@@ -1770,34 +1761,34 @@ mod test {
 
     #[test]
     fn test_jmp_absolute_jumps_to_address() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x4c, 0x04, 0x80, 0x00])));
         // JMP $8004 skips the fall-through BRK at $8003 and lands at
         // $8004 (zeroed memory = BRK). Final PC = $8005.
-        cpu.load_and_run(vec![0x4c, 0x04, 0x80, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8005);
     }
 
     #[test]
     fn test_jmp_indirect_jumps_through_pointer() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x6c, 0x10, 0x00, 0x00])));
         // Pre-write pointer value $8004 at $0010-$0011.
         cpu.mem_write(0x0010, 0x04);
         cpu.mem_write(0x0011, 0x80);
         // JMP ($0010); BRK
-        cpu.load_and_run(vec![0x6c, 0x10, 0x00, 0x00]);
+        cpu.run();
         assert_eq!(cpu.program_counter, 0x8005);
     }
 
     #[test]
     fn test_jmp_indirect_page_wrap_bug() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x6c, 0xff, 0x01, 0x00])));
         // Pre-write pointer at $01FF: low=$08, high=$80.
         // The NMOS bug means high is read from $0100 (not $0200),
         // giving target $8008 instead of $0008.
         cpu.mem_write(0x01FF, 0x08);
         cpu.mem_write(0x0100, 0x80);
         // JMP ($01FF); BRK
-        cpu.load_and_run(vec![0x6c, 0xff, 0x01, 0x00]);
+        cpu.run();
         // With bug: target = $8008 → BRK at $8008 → PC = $8009
         assert_eq!(cpu.program_counter, 0x8009);
     }
@@ -1809,9 +1800,9 @@ mod test {
 
     #[test]
     fn test_pha_pushes_a_onto_stack_and_decrements_sp() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0x48, 0x00])));
         // LDA #$42; PHA; BRK
-        cpu.load_and_run(vec![0xa9, 0x42, 0x48, 0x00]);
+        cpu.run();
         assert_eq!(
             cpu.stack_pointer, 0xFC,
             "SP decremented once from initial 0xFD"
@@ -1825,9 +1816,9 @@ mod test {
 
     #[test]
     fn test_pla_round_trip_restores_a_and_sp() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x42, 0x48, 0xa9, 0x00, 0x68, 0x00])));
         // LDA #$42; PHA; LDA #$00; PLA; BRK
-        cpu.load_and_run(vec![0xa9, 0x42, 0x48, 0xa9, 0x00, 0x68, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x42, "A should be restored from stack");
         assert_eq!(
             cpu.stack_pointer, 0xFD,
@@ -1842,9 +1833,9 @@ mod test {
 
     #[test]
     fn test_php_plp_round_trip_restores_status() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0x08, 0x18, 0x28, 0x00])));
         // SEC (C=1); PHP; CLC (C=0); PLP; BRK
-        cpu.load_and_run(vec![0x38, 0x08, 0x18, 0x28, 0x00]);
+        cpu.run();
         assert!(
             cpu.status.contains(CPUFlags::CARRY),
             "C should be 1 after PLP restores the status pushed after SEC"
@@ -1858,17 +1849,17 @@ mod test {
 
     #[test]
     fn test_txs_transfers_x_to_stack_pointer() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa2, 0x42, 0x9a, 0x00])));
         // LDX #$42; TXS; BRK
-        cpu.load_and_run(vec![0xa2, 0x42, 0x9a, 0x00]);
+        cpu.run();
         assert_eq!(cpu.stack_pointer, 0x42, "SP should equal X after TXS");
     }
 
     #[test]
     fn test_tsx_transfers_stack_pointer_to_x() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa2, 0x42, 0x9a, 0xa2, 0x00, 0xba, 0x00])));
         // LDX #$42; TXS (SP=0x42); LDX #$00 (clobber X); TSX (X=SP); BRK
-        cpu.load_and_run(vec![0xa2, 0x42, 0x9a, 0xa2, 0x00, 0xba, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_x, 0x42, "X should be restored from SP");
     }
 
@@ -1879,20 +1870,20 @@ mod test {
 
     #[test]
     fn test_jsr_rts_subroutine_call_and_return() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![
+            0x20, 0x07, 0x80, // JSR $8007
+            0xa9, 0x42, // LDA #$42 (return here)
+            0x00, 0x00, // BRK as padding
+            0xa9, 0x03, // LDA #$03 (subroutine)
+            0x60, // RTS
+        ])));
         // 0x8000: JSR $8007     -> call subroutine
         // 0x8003: LDA #$42      -> return here after RTS
         // 0x8005: BRK
         // 0x8005-0x8006: padding
         // 0x8007: LDA #$03      -> subroutine clobbers A
         // 0x8009: RTS
-        cpu.load_and_run(vec![
-            0x20, 0x07, 0x80, // JSR $8007
-            0xa9, 0x42, // LDA #$42 (return here)
-            0x00, 0x00, // BRK as padding
-            0xa9, 0x03, // LDA #$03 (subroutine)
-            0x60, // RTS
-        ]);
+        cpu.run();
         assert_eq!(
             cpu.register_a, 0x42,
             "A should be 0x42 after returning from subroutine"
@@ -1905,9 +1896,9 @@ mod test {
     // ASL (0x0A): arithmetic shift left, C = bit 7, result <<= 1
     #[test]
     fn test_asl_accumulator_shifts_left_and_sets_carry() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x80, 0x0a, 0x00])));
         // LDA #$80; ASL A; BRK
-        cpu.load_and_run(vec![0xa9, 0x80, 0x0a, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x00, "$80 << 1 = $00 (truncated)");
         assert!(cpu.status.contains(CPUFlags::CARRY), "C = bit 7 of $80");
         assert!(cpu.status.contains(CPUFlags::ZERO), "result is 0");
@@ -1920,9 +1911,9 @@ mod test {
     // LSR (0x4A): logical shift right, C = bit 0, result >>= 1
     #[test]
     fn test_lsr_accumulator_shifts_right_and_sets_carry() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0x01, 0x4a, 0x00])));
         // LDA #$01; LSR A; BRK
-        cpu.load_and_run(vec![0xa9, 0x01, 0x4a, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x00, "$01 >> 1 = $00");
         assert!(cpu.status.contains(CPUFlags::CARRY), "C = bit 0 of $01");
         assert!(cpu.status.contains(CPUFlags::ZERO), "result is 0");
@@ -1935,9 +1926,9 @@ mod test {
     // ROL (0x2A): rotate left through carry, C → bit 0, bit 7 → C
     #[test]
     fn test_rol_accumulator_rotates_left_through_carry() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x80, 0x2a, 0x00])));
         // SEC; LDA #$80; ROL A; BRK
-        cpu.load_and_run(vec![0x38, 0xa9, 0x80, 0x2a, 0x00]);
+        cpu.run();
         // A = ($80 << 1) | 1 (carry-in) = $01
         // C = bit 7 of $80 = 1
         assert_eq!(cpu.register_a, 0x01);
@@ -1949,9 +1940,9 @@ mod test {
     // ROR (0x6A): rotate right through carry, C → bit 7, bit 0 → C
     #[test]
     fn test_ror_accumulator_rotates_right_through_carry() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x38, 0xa9, 0x01, 0x6a, 0x00])));
         // SEC; LDA #$01; ROR A; BRK
-        cpu.load_and_run(vec![0x38, 0xa9, 0x01, 0x6a, 0x00]);
+        cpu.run();
         // A = ($01 >> 1) | ($80 carry-in) = $80
         // C = bit 0 of $01 = 1
         assert_eq!(cpu.register_a, 0x80);
@@ -1967,7 +1958,7 @@ mod test {
 
     #[test]
     fn test_rti_restores_status_and_pc_from_stack() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa2, 0xf9, 0x9a, 0x40])));
         // Simulate stack state after a BRK/IRQ would have pushed it:
         //   push PC high | push PC low | push status
         // We manually pre-write the stack and use TXS to set SP.
@@ -1976,7 +1967,7 @@ mod test {
         cpu.mem_write(0x01FC, 0x80); // PC high = $80
         // LDX #$F9; TXS (SP=$F9); RTI
         // After RTI: SP=$FC, PC=$8004, then BRK at $8004 halts
-        cpu.load_and_run(vec![0xa2, 0xf9, 0x9a, 0x40]);
+        cpu.run();
         assert_eq!(
             cpu.program_counter, 0x8005,
             "RTI returns to $8004 (BRK), which halts at $8005"
@@ -1992,9 +1983,9 @@ mod test {
 
     #[test]
     fn test_lda_tax_inx_program() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0xa9, 0xc0, 0xaa, 0xe8, 0x00])));
         // LDA #$c0; TAX; INX; BRK
-        cpu.load_and_run(vec![0xa9, 0xc0, 0xaa, 0xe8, 0x00]);
+        cpu.run();
         assert_eq!(cpu.register_x, 0xc1);
         assert!(
             cpu.status.contains(CPUFlags::NEGATIVE),
