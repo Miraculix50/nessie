@@ -238,6 +238,94 @@ pub static CPU_OPCODES: &[OpCode] = &[
     // BIT (test if bits are set in memory)
     OpCode::new(0x24, "BIT", 2, 3, AddressingMode::ZeroPage),
     OpCode::new(0x2c, "BIT", 3, 4, AddressingMode::Absolute),
+    // UNOFFICIAL OPCODES
+    // NOP (do nothing, but read a value)
+    OpCode::new(0x04, "*NOP", 2, 3, AddressingMode::ZeroPage),
+    OpCode::new(0x44, "*NOP", 2, 3, AddressingMode::ZeroPage),
+    OpCode::new(0x64, "*NOP", 2, 3, AddressingMode::ZeroPage),
+    OpCode::new(0x0c, "*NOP", 3, 4, AddressingMode::Absolute),
+    OpCode::new(0x14, "*NOP", 2, 4, AddressingMode::ZeroPage_X),
+    OpCode::new(0x34, "*NOP", 2, 4, AddressingMode::ZeroPage_X),
+    OpCode::new(0x54, "*NOP", 2, 4, AddressingMode::ZeroPage_X),
+    OpCode::new(0x74, "*NOP", 2, 4, AddressingMode::ZeroPage_X),
+    OpCode::new(0xd4, "*NOP", 2, 4, AddressingMode::ZeroPage_X),
+    OpCode::new(0xf4, "*NOP", 2, 4, AddressingMode::ZeroPage_X),
+    OpCode::new(0x80, "*NOP", 2, 2, AddressingMode::Immediate),
+    OpCode::new(0x1c, "*NOP", 3, 4, AddressingMode::Absolute_X), // page crossed -> 5
+    OpCode::new(0x3c, "*NOP", 3, 4, AddressingMode::Absolute_X), // page crossed -> 5
+    OpCode::new(0x5c, "*NOP", 3, 4, AddressingMode::Absolute_X), // page crossed -> 5
+    OpCode::new(0x7c, "*NOP", 3, 4, AddressingMode::Absolute_X), // page crossed -> 5
+    OpCode::new(0xdc, "*NOP", 3, 4, AddressingMode::Absolute_X), // page crossed -> 5
+    OpCode::new(0xfc, "*NOP", 3, 4, AddressingMode::Absolute_X), // page crossed -> 5
+    // NOP (do nothing)
+    OpCode::new(0x1a, "*NOP", 1, 2, AddressingMode::NoneAddressing),
+    OpCode::new(0x3a, "*NOP", 1, 2, AddressingMode::NoneAddressing),
+    OpCode::new(0x5a, "*NOP", 1, 2, AddressingMode::NoneAddressing),
+    OpCode::new(0x7a, "*NOP", 1, 2, AddressingMode::NoneAddressing),
+    OpCode::new(0xda, "*NOP", 1, 2, AddressingMode::NoneAddressing),
+    OpCode::new(0xfa, "*NOP", 1, 2, AddressingMode::NoneAddressing),
+    // LAX (load value to register A and to register X)
+    OpCode::new(0xa3, "*LAX", 2, 6, AddressingMode::Indirect_X),
+    OpCode::new(0xb3, "*LAX", 2, 5, AddressingMode::Indirect_Y), // page crossed -> 5
+    OpCode::new(0xa7, "*LAX", 2, 3, AddressingMode::ZeroPage),
+    OpCode::new(0xb7, "*LAX", 2, 4, AddressingMode::ZeroPage_Y),
+    OpCode::new(0xaf, "*LAX", 3, 4, AddressingMode::Absolute),
+    OpCode::new(0xbf, "*LAX", 3, 4, AddressingMode::Absolute_Y), // page crossed -> 5
+    // SAX (set memory value to result of register A AND register X)
+    OpCode::new(0x87, "*SAX", 2, 3, AddressingMode::ZeroPage),
+    OpCode::new(0x97, "*SAX", 2, 4, AddressingMode::ZeroPage_Y),
+    OpCode::new(0x83, "*SAX", 2, 3, AddressingMode::Indirect_X),
+    OpCode::new(0x8f, "*SAX", 3, 4, AddressingMode::Absolute),
+    // SBC (illegal alias for 0xe9)
+    OpCode::new(0xeb, "*SBC", 2, 2, AddressingMode::Immediate),
+    // DCP (decrement a memory held value and compare it with register A)
+    OpCode::new(0xc7, "*DCP", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0xd7, "*DCP", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0xc3, "*DCP", 2, 8, AddressingMode::Indirect_X),
+    OpCode::new(0xd3, "*DCP", 2, 8, AddressingMode::Indirect_Y),
+    OpCode::new(0xcf, "*DCP", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0xdf, "*DCP", 3, 7, AddressingMode::Absolute_X),
+    OpCode::new(0xdb, "*DCP", 3, 7, AddressingMode::Absolute_Y),
+    // ISB (increment a memory held value and substract it from register A)
+    OpCode::new(0xe7, "*ISB", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0xf7, "*ISB", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0xe3, "*ISB", 2, 8, AddressingMode::Indirect_X),
+    OpCode::new(0xf3, "*ISB", 2, 8, AddressingMode::Indirect_Y),
+    OpCode::new(0xef, "*ISB", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0xff, "*ISB", 3, 7, AddressingMode::Absolute_X),
+    OpCode::new(0xfb, "*ISB", 3, 7, AddressingMode::Absolute_Y),
+    // SLO (shift left and perform OR with the result on register A)
+    OpCode::new(0x07, "*SLO", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0x17, "*SLO", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0x03, "*SLO", 2, 8, AddressingMode::Indirect_X),
+    OpCode::new(0x13, "*SLO", 2, 8, AddressingMode::Indirect_Y),
+    OpCode::new(0x0f, "*SLO", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0x1f, "*SLO", 3, 7, AddressingMode::Absolute_X),
+    OpCode::new(0x1b, "*SLO", 3, 7, AddressingMode::Absolute_Y),
+    // RLA (rotate left and perform AND with the result on register A)
+    OpCode::new(0x27, "*RLA", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0x37, "*RLA", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0x23, "*RLA", 2, 8, AddressingMode::Indirect_X),
+    OpCode::new(0x33, "*RLA", 2, 8, AddressingMode::Indirect_Y),
+    OpCode::new(0x2f, "*RLA", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0x3f, "*RLA", 3, 7, AddressingMode::Absolute_X),
+    OpCode::new(0x3b, "*RLA", 3, 7, AddressingMode::Absolute_Y),
+    // SRE (shift right and perform XOR with the result on register A)
+    OpCode::new(0x47, "*SRE", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0x57, "*SRE", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0x43, "*SRE", 2, 8, AddressingMode::Indirect_X),
+    OpCode::new(0x53, "*SRE", 2, 8, AddressingMode::Indirect_Y),
+    OpCode::new(0x4f, "*SRE", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0x5f, "*SRE", 3, 7, AddressingMode::Absolute_X),
+    OpCode::new(0x5b, "*SRE", 3, 7, AddressingMode::Absolute_Y),
+    // RRA (rotate right and add the result to register A)
+    OpCode::new(0x67, "*RRA", 2, 5, AddressingMode::ZeroPage),
+    OpCode::new(0x77, "*RRA", 2, 6, AddressingMode::ZeroPage_X),
+    OpCode::new(0x63, "*RRA", 2, 8, AddressingMode::Indirect_X),
+    OpCode::new(0x73, "*RRA", 2, 8, AddressingMode::Indirect_Y),
+    OpCode::new(0x6f, "*RRA", 3, 6, AddressingMode::Absolute),
+    OpCode::new(0x7f, "*RRA", 3, 7, AddressingMode::Absolute_X),
+    OpCode::new(0x7b, "*RRA", 3, 7, AddressingMode::Absolute_Y),
 ];
 
 pub static OPCODES_MAP: LazyLock<HashMap<u8, &'static OpCode>> =

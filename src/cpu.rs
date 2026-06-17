@@ -640,6 +640,14 @@ impl CPU {
         self.set_register_x(self.stack_pointer);
     }
 
+    // SAX (set memory value to result of register A AND register X)
+    fn sax(&mut self, mode: &AddressingMode) {
+        self.mem_write(
+            self.get_operand_address(&mode),
+            self.register_a & self.register_x,
+        );
+    }
+
     pub fn load(&mut self, program: Vec<u8>) {
         for i in 0..(program.len() as u16) {
             self.bus.write_prg_rom(0x8000 + i, program[i as usize]);
@@ -776,8 +784,8 @@ impl CPU {
                     self.adc(&opcode.mode);
                 }
 
-                // SBC (substract from register A with borrow-in)
-                0xe9 | 0xe5 | 0xf5 | 0xed | 0xfd | 0xf9 | 0xe1 | 0xf1 => {
+                // SBC (substract from register A with borrow-in); 0xeb is an illegal alias for 0xe9
+                0xeb | 0xe9 | 0xe5 | 0xf5 | 0xed | 0xfd | 0xf9 | 0xe1 | 0xf1 => {
                     self.sbc(&opcode.mode);
                 }
 
@@ -832,6 +840,52 @@ impl CPU {
                 0x40 => self.rti(),          // RTI (return from interrupt)
                 0xea => {}                   // NOP (do nothing, only increment program counter)
                 0x00 => return,              // BRK (stop execution)
+
+                // UNOFFICIAL OPCODES
+                // NOP (do nothing, but read a value)
+                0x04 | 0x44 | 0x64 | 0x0c | 0x14 | 0x34 | 0x54 | 0x74 | 0xd4 | 0xf4 | 0x80
+                | 0x1c | 0x3c | 0x5c | 0x7c | 0xdc | 0xfc => {
+                    let _data = self.mem_read(self.get_operand_address(&opcode.mode));
+                }
+                // NOP (do nothing)
+                0x1a | 0x3a | 0x5a | 0x7a | 0xda | 0xfa => { /* do nothing */ }
+                // LAX (load value to register A and to register X)
+                0xa3 | 0xb3 | 0xa7 | 0xb7 | 0xaf | 0xbf => {
+                    self.lda(&opcode.mode);
+                    self.tax();
+                }
+                // SAX (set memory value to result of register A AND register X)
+                0x87 | 0x97 | 0x83 | 0x8f => self.sax(&opcode.mode),
+                // DCP (decrement a memory held value and compare it with register A)
+                0xc7 | 0xd7 | 0xc3 | 0xd3 | 0xcf | 0xdf | 0xdb => {
+                    self.dec(&opcode.mode);
+                    self.cmp(&opcode.mode);
+                }
+                // ISB (increment a memory held value and substract it from register A)
+                0xe7 | 0xf7 | 0xe3 | 0xf3 | 0xef | 0xff | 0xfb => {
+                    self.inc(&opcode.mode);
+                    self.sbc(&opcode.mode);
+                }
+                // SLO (shift left and perform OR with the result on register A)
+                0x07 | 0x17 | 0x03 | 0x13 | 0x0f | 0x1f | 0x1b => {
+                    self.asl(&opcode.mode);
+                    self.ora(&opcode.mode);
+                }
+                // RLA (rotate left and perform AND with the result on register A)
+                0x27 | 0x37 | 0x23 | 0x33 | 0x2f | 0x3f | 0x3b => {
+                    self.rol(&opcode.mode);
+                    self.and(&opcode.mode);
+                }
+                // SRE (shift right and perform XOR with the result on register A)
+                0x47 | 0x57 | 0x43 | 0x53 | 0x4f | 0x5f | 0x5b => {
+                    self.lsr(&opcode.mode);
+                    self.eor(&opcode.mode);
+                }
+                // RRA (rotate right and add the result to register A)
+                0x67 | 0x77 | 0x63 | 0x73 | 0x6f | 0x7f | 0x7b => {
+                    self.ror(&opcode.mode);
+                    self.adc(&opcode.mode);
+                }
                 _ => unimplemented!(
                     "opcode 0x{:02x} ({}) has no dispatch arm in run()",
                     code,
