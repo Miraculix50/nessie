@@ -1,9 +1,10 @@
-# CPU Test Plan
+# Test Plan
 
-This document describes the testing strategy for the CPU module (`src/cpu.rs`).
-It is intended for future contributors (human or AI) to understand **what is
-tested, what is intentionally not tested, and why**, so that tests can be
-extended consistently as new instructions and features are added.
+This document describes the testing strategy for the CPU module (`src/cpu.rs`)
+and the PPU module (`src/ppu.rs`). It is intended for future contributors
+(human or AI) to understand **what is tested, what is intentionally not tested,
+and why**, so that tests can be extended consistently as new instructions and
+features are added.
 
 ## Guiding principles
 
@@ -366,6 +367,21 @@ RTI pops the status register and then the 16-bit program counter from the stack 
 | Test | Purpose |
 |------|---------|
 | `test_opcode_table_mode_length_consistency` | Iterates `CPU_OPCODES` and asserts that each entry's `len` matches the byte-count required by its `AddressingMode` (1 for `NoneAddressing`, 2 for immediate/zero-page/indirect modes, 3 for absolute modes). This catches copy-paste errors in the opcode table that the addressing-mode resolver tests cannot detect, because the resolver is tested via LDA entries only — bugs in any other instruction's table row (e.g. a wrong `mode` paired with a correct `len`) would otherwise go unnoticed until that opcode is exercised at runtime. |
+
+## PPU — AddrRegister (`src/ppu.rs`)
+
+The `AddrRegister` is a 16-bit address register with a two-write latch
+(`hi_ptr` toggle). The CPU writes high byte then low byte to `$2006`;
+`hi_ptr` tracks which byte is expected next. After assembly, the address
+is mirrored down if it exceeds `$3FFF`.
+
+| Test | Purpose |
+|------|---------|
+| `test_ppu_addr_assembles_16bit_via_two_writes` | `update(0x23); update(0x05)` → `get() == 0x2305`. Verifies high byte then low byte are stored correctly. |
+| `test_ppu_addr_latch_toggles` | After 3 writes (hi, lo, hi) the low byte from the second write survives. Verifies `hi_ptr` flips each time. |
+| `test_ppu_addr_increment_carries` | Set to `$23FF`, `increment(1)` → `$2400`. Verifies `wrapping_add` carry propagates from low to high byte. |
+| `test_ppu_addr_mirrors_above_0x3fff` | `update(0x40); update(0x00)` → `get() == 0x0000` (masked to 14 bits). |
+| `test_ppu_addr_reset_latch` | After one write, `reset_latch()` forces `hi_ptr = true` so the next write goes to the high byte. |
 
 ## Intentionally excluded tests
 
