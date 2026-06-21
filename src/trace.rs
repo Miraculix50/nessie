@@ -3,7 +3,7 @@ use crate::cpu::CPU;
 use crate::cpu::Mem;
 use crate::opcodes;
 
-pub fn trace(cpu: &CPU) -> String {
+pub fn trace(cpu: &mut CPU) -> String {
     let opcodes = &*opcodes::OPCODES_MAP;
 
     let code = cpu.mem_read(cpu.program_counter);

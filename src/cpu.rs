@@ -58,10 +58,10 @@ pub enum AddressingMode {
 }
 
 pub trait Mem {
-    fn mem_read(&self, addr: u16) -> u8;
+    fn mem_read(&mut self, addr: u16) -> u8;
     fn mem_write(&mut self, addr: u16, data: u8);
 
-    fn mem_read_u16(&self, pos: u16) -> u16 {
+    fn mem_read_u16(&mut self, pos: u16) -> u16 {
         let lo = self.mem_read(pos) as u16;
         let hi = self.mem_read(pos + 1) as u16;
         (hi << 8) | lo
@@ -76,7 +76,7 @@ pub trait Mem {
 }
 
 impl Mem for CPU {
-    fn mem_read(&self, addr: u16) -> u8 {
+    fn mem_read(&mut self, addr: u16) -> u8 {
         self.bus.mem_read(addr)
     }
 
@@ -84,7 +84,7 @@ impl Mem for CPU {
         self.bus.mem_write(addr, data);
     }
 
-    fn mem_read_u16(&self, pos: u16) -> u16 {
+    fn mem_read_u16(&mut self, pos: u16) -> u16 {
         self.bus.mem_read_u16(pos)
     }
 
@@ -106,7 +106,7 @@ impl CPU {
         }
     }
 
-    pub fn get_absolute_address(&self, mode: &AddressingMode, addr: u16) -> u16 {
+    pub fn get_absolute_address(&mut self, mode: &AddressingMode, addr: u16) -> u16 {
         match mode {
             AddressingMode::ZeroPage => self.mem_read(addr) as u16,
 
@@ -161,7 +161,7 @@ impl CPU {
         }
     }
 
-    fn get_operand_address(&self, mode: &AddressingMode) -> u16 {
+    fn get_operand_address(&mut self, mode: &AddressingMode) -> u16 {
         match mode {
             AddressingMode::Immediate => self.program_counter,
             _ => self.get_absolute_address(&mode, self.program_counter),
@@ -400,6 +400,7 @@ impl CPU {
         self.mem_write(addr, updated_value);
         self.update_zero_and_negative_flags(updated_value);
     }
+
     /// DEC (decrement a memory held value)
     fn dec(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
@@ -642,10 +643,8 @@ impl CPU {
 
     // SAX (set memory value to result of register A AND register X)
     fn sax(&mut self, mode: &AddressingMode) {
-        self.mem_write(
-            self.get_operand_address(&mode),
-            self.register_a & self.register_x,
-        );
+        let addr = self.get_operand_address(&mode);
+        self.mem_write(addr, self.register_a & self.register_x);
     }
 
     pub fn load(&mut self, program: Vec<u8>) {
@@ -845,7 +844,8 @@ impl CPU {
                 // NOP (do nothing, but read a value)
                 0x04 | 0x44 | 0x64 | 0x0c | 0x14 | 0x34 | 0x54 | 0x74 | 0xd4 | 0xf4 | 0x80
                 | 0x1c | 0x3c | 0x5c | 0x7c | 0xdc | 0xfc => {
-                    let _data = self.mem_read(self.get_operand_address(&opcode.mode));
+                    let addr = self.get_operand_address(&opcode.mode);
+                    let _data = self.mem_read(addr);
                 }
                 // NOP (do nothing)
                 0x1a | 0x3a | 0x5a | 0x7a | 0xda | 0xfa => { /* do nothing */ }
@@ -892,6 +892,8 @@ impl CPU {
                     opcode.mnemonic
                 ), // A not implemented operation code
             }
+
+            self.bus.tick(opcode.cycles);
 
             if program_counter_state == self.program_counter {
                 self.program_counter += (opcode.len - 1) as u16;
@@ -2095,6 +2097,43 @@ mod test {
             cpu.status.contains(CPUFlags::CARRY),
             "C flag restored from pushed status"
         );
+    }
+
+    // ----- NMI Interrupt -----
+
+    #[test]
+    fn test_cpu_interrupt_nmi_pushes_pc_and_status() {
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x00])));
+        cpu.program_counter = 0xBEEF;
+        cpu.interrupt_nmi();
+        // SP decremented by 3 (2 for PC + 1 for status)
+        assert_eq!(cpu.stack_pointer, 0xFA);
+        // Status byte pushed at 0x01FB (with BREAK=0, BREAK2=1)
+        let pushed_status = cpu.mem_read(0x01FB);
+        assert_eq!(pushed_status & 0b00010000, 0, "BREAK flag should be 0");
+        assert_ne!(pushed_status & 0b00100000, 0, "BREAK2 flag should be 1");
+        // PC = 0xBEEF at 0x01FC (low) and 0x01FD (high)
+        assert_eq!(cpu.mem_read(0x01FC), 0xEF, "PC low byte");
+        assert_eq!(cpu.mem_read(0x01FD), 0xBE, "PC high byte");
+    }
+
+    #[test]
+    fn test_cpu_interrupt_nmi_loads_vector() {
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x00])));
+        // Write NMI vector at 0xFFFA
+        cpu.bus.write_prg_rom(0xFFFA, 0x34);
+        cpu.bus.write_prg_rom(0xFFFB, 0x12);
+        cpu.interrupt_nmi();
+        assert_eq!(cpu.program_counter, 0x1234);
+    }
+
+    #[test]
+    fn test_cpu_interrupt_nmi_sets_interrupt_disable() {
+        let mut cpu = CPU::new(Bus::new(test::test_rom(vec![0x00])));
+        cpu.status.remove(CPUFlags::INTERRUPT_DISABLE);
+        assert!(!cpu.status.contains(CPUFlags::INTERRUPT_DISABLE));
+        cpu.interrupt_nmi();
+        assert!(cpu.status.contains(CPUFlags::INTERRUPT_DISABLE));
     }
 
     // ----- Integration -----

@@ -336,6 +336,19 @@ RTI pops the status register and then the 16-bit program counter from the stack 
 |---|---|
 | `test_rti_restores_status_and_pc_from_stack` | Pre-writes status with C=1 and PC=$8004 onto the stack, sets SP via TXS, runs RTI. Asserts PC=$8005 (BRK at $8004 halts), SP=$FC, and C=1 restored. |
 
+### NMI (Non-Maskable Interrupt)
+
+NMI is triggered by the PPU entering VBlank (scanline 241). The CPU pushes PC
+and status (with BREAK cleared, BREAK2 set) onto the stack, sets the I flag,
+and loads the handler address from `$FFFA`. The `bus.tick(2)` cycles are
+consumed during interrupt handling.
+
+| Test | Purpose |
+|---|---|
+| `test_cpu_interrupt_nmi_pushes_pc_and_status` | PC (high then low) and status byte are pushed; BREAK is clear, BREAK2 is set in the pushed status. |
+| `test_cpu_interrupt_nmi_loads_vector` | After the push sequence, PC is loaded from the 16-bit word at `$FFFA`. |
+| `test_cpu_interrupt_nmi_sets_interrupt_disable` | After NMI, the I flag is set, blocking maskable IRQs. |
+
 ### Register transfers & increments
 
 | Test | Purpose |
@@ -382,6 +395,119 @@ is mirrored down if it exceeds `$3FFF`.
 | `test_ppu_addr_increment_carries` | Set to `$23FF`, `increment(1)` → `$2400`. Verifies `wrapping_add` carry propagates from low to high byte. |
 | `test_ppu_addr_mirrors_above_0x3fff` | `update(0x40); update(0x00)` → `get() == 0x0000` (masked to 14 bits). |
 | `test_ppu_addr_reset_latch` | After one write, `reset_latch()` forces `hi_ptr = true` so the next write goes to the high byte. |
+
+### PPU — ControlRegister (`src/ppu/registers/control.rs`)
+
+The `ControlRegister` (PPUCTRL `$2000`) holds bitflags that control PPU behavior:
+nametable selection, VRAM address increment, pattern table addresses, sprite size,
+and NMI generation.
+
+| Test | Purpose |
+|------|---------|
+| `test_ctrl_new_defaults_to_zero` | `from_bits_truncate(0)` must produce an all-clear register. |
+| `test_ctrl_vram_increment` | Default (bit 2 clear) → 1; bit 2 set → 32. Exercises the only method with a numeric return value beyond booleans. |
+
+Skipped: `nametable_addr`, `generate_vblank_nmi`, `sprt_pattern_addr`,
+`bknd_pattern_addr`, `sprite_size` — not yet implemented; add tests when
+these methods are added to `ControlRegister`.
+
+### PPU — MaskRegister (`src/ppu/registers/mask.rs`)
+
+The `MaskRegister` (PPUMASK `$2001`) controls which elements are rendered
+and which color emphases are applied.
+
+| Test | Purpose |
+|------|---------|
+| `test_mask_new_defaults_to_zero` | `from_bits_truncate(0)` must produce an all-clear register. |
+| `test_mask_show_background` | `update(0b00001000)` → `show_background() == true`. |
+| `test_mask_show_sprites` | `update(0b00010000)` → `show_sprites() == true`. |
+
+### PPU — StatusRegister (`src/ppu/registers/status.rs`)
+
+The `StatusRegister` (PPUSTATUS `$2002`) reports PPU state: VBlank,
+sprite zero hit, and sprite overflow.
+
+| Test | Purpose |
+|------|---------|
+| `test_status_new_defaults_to_zero` | `from_bits_truncate(0)` must produce an all-clear register. |
+| `test_status_set_and_reset_vblank` | `set_vblank_status(true)` → `is_in_vblank()` true; `reset_vblank_status()` → false. |
+| `test_status_snapshot` | `snapshot()` returns the raw bits; bit 7 set after VBlank. |
+
+### PPU — ScrollRegister (`src/ppu/registers/scroll.rs`)
+
+The `ScrollRegister` (PPUSCROLL `$2005`) uses a two-write latch to set
+the scroll X and Y position separately.
+
+| Test | Purpose |
+|------|---------|
+| `test_scroll_new_defaults` | `scroll_x` and `scroll_y` start at 0. |
+| `test_scroll_write_x_then_y` | First write to `$2005` sets X, second sets Y. |
+| `test_scroll_reset_latch` | After `reset_latch()`, the next write goes to X again (even mid-sequence). |
+
+### PPU — read_data / write_to_data
+
+`read_data` implements the internal-buffer dummy-read pattern for CHR ROM and
+VRAM; palette reads bypass the buffer. `write_to_data` writes to VRAM or
+palette memory and increments the address.
+
+| Test | Purpose |
+|------|---------|
+| `test_ppu_read_data_chr_rom_uses_internal_buffer` | First read returns old buffer (0), second returns the CHR ROM value at the current address. |
+| `test_ppu_read_data_vram_uses_internal_buffer` | Same buffer pattern for VRAM, through `mirror_vram_addr`. |
+| `test_ppu_read_data_palette_returns_directly` | Palette reads skip the buffer entirely — value is returned immediately on the first read. |
+| `test_ppu_write_data_vram` | Writing to a VRAM address writes through `mirror_vram_addr` and lands in the `vram` array. |
+| `test_ppu_write_data_palette` | Writing to a palette address lands in `palette_table`. |
+| `test_ppu_write_data_increments_address` | After writing to `$2000`, the address auto-increments to `$2001`; a second write lands at the next byte. |
+
+### PPU — Tick / NMI (`src/ppu/mod.rs`)
+
+`PPU::tick(cycles)` tracks the PPU's dot-clock position. Every 341 cycles the
+scanline advances; at scanline 241 VBlank is asserted; at scanline 262 the
+frame resets. NMI is generated when VBlank starts if bit 7 of the control
+register is set. Writing to `$2000` (PPUCTRL) with NMI-enable transitioning
+from 0→1 while VBlank is active also raises NMI immediately.
+
+| Test | Purpose |
+|------|---------|
+| `test_ppu_tick_accumulates_cycles` | `tick(100)` increments `cycles` without advancing the scanline. |
+| `test_ppu_tick_advances_scanline` | Exactly 341 cycles advance one scanline and wrap `cycles` back to 0. |
+| `test_ppu_tick_multiple_scanlines` | `tick(341 * 3)` advances 3 scanlines. |
+| `test_ppu_tick_vblank_at_scanline_241` | VBlank flag is set when scanline 241 is reached. |
+| `test_ppu_tick_frame_end_resets` | At scanline 262 the frame resets: scanline=0, VBlank cleared, `tick` returns `true`. |
+| `test_ppu_tick_nmi_triggered_when_enabled` | NMI is set when VBlank fires and ctrl bit 7 is 1. |
+| `test_ppu_tick_nmi_not_triggered_when_disabled` | No NMI when ctrl bit 7 is 0. |
+| `test_ppu_nmi_on_ctrl_write_during_vblank` | Enabling NMI via `write_to_ctrl` while already in VBlank triggers immediate NMI. |
+
+### PPU — Bus Integration (`src/bus.rs`)
+
+The Bus dispatches CPU reads/writes in the `$2000–$3FFF` range to the PPU's
+register methods. The PPU register range includes hardware mirrors: every 8
+bytes (`$2000–$2007`) repeats every 8 bytes up to `$3FFF`.
+
+| Test | Purpose |
+|------|---------|
+| `test_bus_write_2000_sets_ctrl` | Write to `$2000` (PPUCTRL) sets the PPU's `ctrl` register. |
+| `test_bus_write_2001_sets_mask` | Write to `$2001` (PPUMASK) sets the PPU's `mask` register. |
+| `test_bus_read_2002_returns_status_and_clears_vblank` | Read from `$2002` (PPUSTATUS) returns the PPU's `status` snapshot, then clears VBLANK. |
+| `test_bus_read_2002_resets_addr_latch` | Reading `$2002` resets the PPU address latch (next `$2006` write goes to high byte). |
+| `test_bus_read_2002_resets_scroll_latch` | Reading `$2002` resets the scroll latch (next `$2005` write goes to scroll X). |
+| `test_bus_write_2005_sets_scroll_x` | First write to `$2005` (PPUSCROLL) sets scroll X. |
+| `test_bus_write_2006_sets_addr` | Two writes to `$2006` (PPUADDR) assemble the 16-bit VRAM address. |
+| `test_bus_write_2007_writes_vram` | Write to `$2007` (PPUDATA) reaches VRAM through `write_data`. |
+| `test_bus_write_ppu_mirror_routes_to_ctrl` | Write to `$2008` (mirror of `$2000`) is redirected to the same register. |
+
+### Bus — Tick / NMI Polling (`src/bus.rs`)
+
+`Bus::tick(cycles)` accumulates the cycle count and propagates CPU cycles to
+the PPU (multiplied by 3, since the PPU clock runs 3× faster). `poll_nmi_status`
+checks whether the PPU has a pending NMI interrupt.
+
+| Test | Purpose |
+|------|---------|
+| `test_bus_tick_accumulates_cycles` | Successive `tick` calls accumulate in `bus.cycles`. |
+| `test_bus_tick_propagates_to_ppu` | 341 bus ticks = 1023 PPU cycles = 3 scanlines. |
+| `test_bus_poll_nmi_status_returns_some_when_pending` | After VBlank with NMI enabled, `poll_nmi_status` returns `Some(1)`. |
+| `test_bus_poll_nmi_status_returns_none_when_no_nmi` | Without a pending NMI, `poll_nmi_status` returns `None`. |
 
 ## Intentionally excluded tests
 
