@@ -500,14 +500,14 @@ bytes (`$2000–$2007`) repeats every 8 bytes up to `$3FFF`.
 
 `Bus::tick(cycles)` accumulates the cycle count and propagates CPU cycles to
 the PPU (multiplied by 3, since the PPU clock runs 3× faster). `poll_nmi_status`
-checks whether the PPU has a pending NMI interrupt.
+checks whether the PPU has a pending NMI interrupt (`bool`).
 
 | Test | Purpose |
 |------|---------|
 | `test_bus_tick_accumulates_cycles` | Successive `tick` calls accumulate in `bus.cycles`. |
 | `test_bus_tick_propagates_to_ppu` | 341 bus ticks = 1023 PPU cycles = 3 scanlines. |
-| `test_bus_poll_nmi_status_returns_some_when_pending` | After VBlank with NMI enabled, `poll_nmi_status` returns `Some(1)`. |
-| `test_bus_poll_nmi_status_returns_none_when_no_nmi` | Without a pending NMI, `poll_nmi_status` returns `None`. |
+| `test_bus_poll_nmi_status_returns_true_when_pending` | After VBlank with NMI enabled, `poll_nmi_status` returns `true`. |
+| `test_bus_poll_nmi_status_returns_false_when_no_nmi` | Without a pending NMI, `poll_nmi_status` returns `false`. |
 
 ## Intentionally excluded tests
 

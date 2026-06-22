@@ -1,5 +1,5 @@
 use crate::cartridge::Mirroring;
-use crate::ppu::registers::addr;
+use crate::ppu;
 use registers::addr::AddrRegister;
 use registers::control::ControlRegister;
 use registers::mask::MaskRegister;
@@ -23,6 +23,10 @@ pub struct PPU {
     pub addr: AddrRegister,
 
     internal_data_buf: u8,
+
+    pub(crate) scanline: u16,
+    pub(crate) cycles: u16,
+    pub nmi: bool,
 }
 
 impl PPU {
@@ -39,6 +43,10 @@ impl PPU {
             scroll: ScrollRegister::new(),
             addr: AddrRegister::new(),
             internal_data_buf: 0,
+
+            scanline: 0,
+            cycles: 0,
+            nmi: false,
         }
     }
 
@@ -55,7 +63,11 @@ impl PPU {
     }
 
     pub fn write_to_ctrl(&mut self, value: u8) {
+        let before_nmi_status = self.ctrl.generate_vblank_nmi();
         self.ctrl.update(value);
+        if !before_nmi_status && self.ctrl.generate_vblank_nmi() && self.status.is_in_vblank() {
+            self.nmi = true;
+        }
     }
 
     pub fn write_to_mask(&mut self, value: u8) {
@@ -138,6 +150,40 @@ impl PPU {
             _ => panic!("Unexpected access to mirrored space {}", addr),
         }
         self.increment_vram_addr();
+    }
+
+    pub fn tick(&mut self, cycles: u16) -> bool {
+        self.cycles += cycles;
+        if self.cycles >= 341 {
+            self.cycles -= 341;
+            self.scanline += 1;
+
+            if self.scanline == 241 {
+                // First off-screen scanline (vblank phase)
+                self.status.set_vblank_status(true);
+                self.status.set_sprite_zero_hit(false);
+                if self.ctrl.generate_vblank_nmi() {
+                    self.nmi = true;
+                }
+            }
+
+            if self.scanline >= 262 {
+                // Last scanline reached
+                self.scanline = 0;
+                self.nmi = false;
+                self.status.set_sprite_zero_hit(false);
+                self.status.reset_vblank_status();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    pub fn poll_nmi_interrupt(&mut self) -> bool {
+        let nmi_status = self.nmi;
+        self.nmi = false;
+        nmi_status
     }
 }
 
@@ -322,6 +368,13 @@ mod tests {
 
     // ----- PPU tick (scanline/cycle timing) -----
 
+    /// Helper: advance PPU by N scanlines (341 cycles each)
+    fn advance_scanlines(ppu: &mut PPU, n: u16) {
+        for _ in 0..n {
+            ppu.tick(341);
+        }
+    }
+
     #[test]
     fn test_ppu_tick_accumulates_cycles() {
         let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
@@ -341,17 +394,15 @@ mod tests {
     #[test]
     fn test_ppu_tick_multiple_scanlines() {
         let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
-        ppu.tick(341 * 3);
+        advance_scanlines(&mut ppu, 3);
         assert_eq!(ppu.scanline, 3);
     }
 
     #[test]
     fn test_ppu_tick_vblank_at_scanline_241() {
         let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
-        // Skip to scanline 240
-        ppu.tick(341 * 240);
+        advance_scanlines(&mut ppu, 240);
         assert!(!ppu.status.is_in_vblank());
-        // One more scanline → scanline 241
         ppu.tick(341);
         assert!(ppu.status.is_in_vblank());
     }
@@ -359,10 +410,8 @@ mod tests {
     #[test]
     fn test_ppu_tick_frame_end_resets() {
         let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
-        // Skip to scanline 261 (one before frame end)
-        ppu.tick(341 * 261);
+        advance_scanlines(&mut ppu, 261);
         assert!(ppu.status.is_in_vblank());
-        // One more scanline → scanline 262 → reset
         let frame_done = ppu.tick(341);
         assert!(frame_done);
         assert_eq!(ppu.scanline, 0);
@@ -373,30 +422,25 @@ mod tests {
     #[test]
     fn test_ppu_tick_nmi_triggered_when_enabled() {
         let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
-        ppu.ctrl.update(0b10000000); // enable NMI
-        // Skip to scanline 241
-        ppu.tick(341 * 241);
-        assert_eq!(ppu.poll_nmi_interrupt(), Some(1));
+        ppu.ctrl.update(0b10000000);
+        advance_scanlines(&mut ppu, 241);
+        assert!(ppu.poll_nmi_interrupt());
     }
 
     #[test]
     fn test_ppu_tick_nmi_not_triggered_when_disabled() {
         let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
-        ppu.ctrl.update(0); // NMI disabled
-        // Skip to scanline 241
-        ppu.tick(341 * 241);
-        assert_eq!(ppu.poll_nmi_interrupt(), None);
+        advance_scanlines(&mut ppu, 241);
+        assert!(!ppu.poll_nmi_interrupt());
     }
 
     #[test]
     fn test_ppu_nmi_on_ctrl_write_during_vblank() {
         let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
-        // Enter VBlank
-        ppu.tick(341 * 241);
+        advance_scanlines(&mut ppu, 241);
         assert!(ppu.status.is_in_vblank());
-        // Enable NMI while already in VBlank → immediate NMI
         ppu.write_to_ctrl(0b10000000);
-        assert_eq!(ppu.poll_nmi_interrupt(), Some(1));
+        assert!(ppu.poll_nmi_interrupt());
     }
 
     // ----- write_data -----

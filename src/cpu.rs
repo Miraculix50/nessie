@@ -39,7 +39,10 @@ pub struct CPU {
     pub status: CPUFlags,
     pub program_counter: u16,
     pub stack_pointer: u8,
+
     pub bus: Bus,
+    cycle_debt: u8,
+    page_crossed: bool,
 }
 
 #[derive(Debug)]
@@ -103,6 +106,8 @@ impl CPU {
             program_counter: 0x8000,
             stack_pointer: STACK_RESET,
             bus: bus,
+            cycle_debt: 0,
+            page_crossed: false,
         }
     }
 
@@ -127,19 +132,29 @@ impl CPU {
             AddressingMode::Absolute_X => {
                 let base = self.mem_read_u16(addr);
                 let addr = base.wrapping_add(self.register_x as u16);
+
+                if base & 0xFF00 != addr & 0xFF00 {
+                    self.page_crossed = true;
+                }
+
                 addr
             }
 
             AddressingMode::Absolute_Y => {
                 let base = self.mem_read_u16(addr);
                 let addr = base.wrapping_add(self.register_y as u16);
+
+                if base & 0xFF00 != addr & 0xFF00 {
+                    self.page_crossed = true;
+                }
+
                 addr
             }
 
             AddressingMode::Indirect_X => {
                 let base = self.mem_read(addr);
 
-                let ptr: u8 = (base as u8).wrapping_add(self.register_x);
+                let ptr = base.wrapping_add(self.register_x);
                 let lo = self.mem_read(ptr as u16);
                 let hi = self.mem_read(ptr.wrapping_add(1) as u16);
                 (hi as u16) << 8 | (lo as u16)
@@ -149,9 +164,14 @@ impl CPU {
                 let base = self.mem_read(addr);
 
                 let lo = self.mem_read(base as u16);
-                let hi = self.mem_read((base as u8).wrapping_add(1) as u16);
+                let hi = self.mem_read(base.wrapping_add(1) as u16);
                 let deref_base = (hi as u16) << 8 | (lo as u16);
                 let deref = deref_base.wrapping_add(self.register_y as u16);
+
+                if deref_base & 0xFF00 != deref & 0xFF00 {
+                    self.page_crossed = true;
+                }
+
                 deref
             }
 
@@ -234,13 +254,18 @@ impl CPU {
     /// General function for branch opcodes
     fn branch(&mut self, condition: bool) {
         if condition {
+            self.cycle_debt += 1;
             let jump = self.mem_read(self.program_counter) as i8 as i16;
             let jump_addr = self
                 .program_counter
                 .wrapping_add(1)
                 .wrapping_add_signed(jump);
 
+            let old_pc = self.program_counter;
             self.program_counter = jump_addr;
+            if old_pc & 0xFF00 != self.program_counter & 0xFF00 {
+                self.cycle_debt += 1;
+            }
         }
     }
 
@@ -304,7 +329,28 @@ impl CPU {
         self.program_counter = target + 1;
     }
 
-    // RTI (return from interrupt)
+    /// NMI (non maskable interrupt)
+    fn interrupt_nmi(&mut self) {
+        // Push PC to stack
+        self.stack_push_u16(self.program_counter);
+
+        // Push status to stack, always setting BREAK2 and clearing BREAK
+        let mut flags = self.status.bits();
+        flags &= 0b1110_1111;
+        flags |= 0b0010_0000;
+        self.stack_push(flags);
+
+        // Set interrupt disable flag
+        self.status.insert(CPUFlags::INTERRUPT_DISABLE);
+
+        // 2 cycles for reading the new PC
+        self.bus.tick(2);
+
+        // Set PC from address 0xFFFA
+        self.program_counter = self.mem_read_u16(0xFFFA);
+    }
+
+    /// RTI (return from interrupt)
     fn rti(&mut self) {
         let flags = self.stack_pop();
         self.status = CPUFlags::from_bits_truncate(flags);
@@ -675,6 +721,10 @@ impl CPU {
         let opcodes = &*opcodes::OPCODES_MAP;
 
         loop {
+            if self.bus.poll_nmi_status() {
+                self.interrupt_nmi();
+            }
+
             callback(self);
 
             let code = self.mem_read(self.program_counter);
@@ -893,7 +943,12 @@ impl CPU {
                 ), // A not implemented operation code
             }
 
-            self.bus.tick(opcode.cycles);
+            if self.page_crossed && opcode.page_cross {
+                self.cycle_debt += 1;
+            }
+            self.bus.tick(opcode.cycles as u16 + self.cycle_debt as u16);
+            self.cycle_debt = 0;
+            self.page_crossed = false;
 
             if program_counter_state == self.program_counter {
                 self.program_counter += (opcode.len - 1) as u16;

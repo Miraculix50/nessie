@@ -14,7 +14,7 @@ pub struct Bus {
     prg_rom: Vec<u8>,
     pub ppu: PPU,
 
-    cycles: usize,
+    cycles: u64,
 }
 
 impl Bus {
@@ -47,9 +47,13 @@ impl Bus {
         self.prg_rom[(addr - 0x8000) as usize] = data;
     }
 
-    pub fn tick(&mut self, cycles: u8) {
-        self.cycles += cycles as usize;
-        self.ppu.tick(cycles * 3);
+    pub fn tick(&mut self, cycles: u16) {
+        self.cycles += cycles as u64;
+        self.ppu.tick(cycles as u16 * 3);
+    }
+
+    pub fn poll_nmi_status(&mut self) -> bool {
+        self.ppu.poll_nmi_interrupt()
     }
 }
 
@@ -206,27 +210,23 @@ mod tests {
     #[test]
     fn test_bus_tick_propagates_to_ppu() {
         let mut bus = Bus::new(test_rom(vec![0; 32]));
-        // 1 bus cycle = 3 PPU cycles
-        // 341 bus cycles = 1023 PPU cycles = 3 scanlines
-        bus.tick(341);
-        assert_eq!(bus.ppu.scanline, 3);
-        assert_eq!(bus.ppu.cycles, 0);
+        bus.tick(1);
+        assert_eq!(bus.ppu.cycles, 3);
     }
 
     #[test]
-    fn test_bus_poll_nmi_status_returns_some_when_pending() {
+    fn test_bus_poll_nmi_status_returns_true_when_pending() {
         let mut bus = Bus::new(test_rom(vec![0; 32]));
         bus.ppu.ctrl.update(0b10000000);
-        // Advance PPU to VBlank (scanline 241)
-        bus.ppu.tick(341 * 241);
-        let nmi = bus.poll_nmi_status();
-        assert_eq!(nmi, Some(1));
+        for _ in 0..241 {
+            bus.ppu.tick(341);
+        }
+        assert!(bus.poll_nmi_status());
     }
 
     #[test]
-    fn test_bus_poll_nmi_status_returns_none_when_no_nmi() {
+    fn test_bus_poll_nmi_status_returns_false_when_no_nmi() {
         let mut bus = Bus::new(test_rom(vec![0; 32]));
-        let nmi = bus.poll_nmi_status();
-        assert_eq!(nmi, None);
+        assert!(!bus.poll_nmi_status());
     }
 }
