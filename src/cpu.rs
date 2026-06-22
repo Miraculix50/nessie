@@ -261,7 +261,7 @@ impl CPU {
                 .wrapping_add(1)
                 .wrapping_add_signed(jump);
 
-            let old_pc = self.program_counter;
+            let old_pc = self.program_counter.wrapping_add(1);
             self.program_counter = jump_addr;
             if old_pc & 0xFF00 != self.program_counter & 0xFF00 {
                 self.cycle_debt += 1;
@@ -329,14 +329,18 @@ impl CPU {
         self.program_counter = target + 1;
     }
 
-    /// NMI (non maskable interrupt)
-    fn interrupt_nmi(&mut self) {
+    /// Generic function for any CPU interrupts
+    fn interrupt(&mut self, vector: u16, set_break: bool) {
         // Push PC to stack
         self.stack_push_u16(self.program_counter);
 
         // Push status to stack, always setting BREAK2 and clearing BREAK
         let mut flags = self.status.bits();
-        flags &= 0b1110_1111;
+        if set_break {
+            flags |= 0b0001_0000;
+        } else {
+            flags &= 0b1110_1111;
+        }
         flags |= 0b0010_0000;
         self.stack_push(flags);
 
@@ -347,13 +351,20 @@ impl CPU {
         self.bus.tick(2);
 
         // Set PC from address 0xFFFA
-        self.program_counter = self.mem_read_u16(0xFFFA);
+        self.program_counter = self.mem_read_u16(vector);
+    }
+
+    /// NMI (non maskable interrupt)
+    fn interrupt_nmi(&mut self) {
+        self.interrupt(0xFFFA, false);
     }
 
     /// RTI (return from interrupt)
     fn rti(&mut self) {
         let flags = self.stack_pop();
         self.status = CPUFlags::from_bits_truncate(flags);
+        self.status.remove(CPUFlags::BREAK);
+        self.status.insert(CPUFlags::BREAK2);
 
         self.program_counter = self.stack_pop_u16();
     }
@@ -675,6 +686,8 @@ impl CPU {
     fn plp(&mut self) {
         let flags = self.stack_pop();
         self.status = CPUFlags::from_bits_truncate(flags);
+        self.status.remove(CPUFlags::BREAK);
+        self.status.insert(CPUFlags::BREAK2);
     }
 
     /// TXS (transfer register X to stack pointer)
@@ -707,7 +720,8 @@ impl CPU {
         self.status = CPUFlags::from_bits_truncate(0b00100100);
 
         self.stack_pointer = STACK_RESET;
-        self.program_counter = self.mem_read_u16(0xFFFC)
+        self.program_counter = self.mem_read_u16(0xFFFC);
+        self.bus.tick(7);
     }
 
     pub fn run(&mut self) {
@@ -888,7 +902,15 @@ impl CPU {
                 0xba => self.tsx(),          // TSX (transfer stack pointer to register X)
                 0x40 => self.rti(),          // RTI (return from interrupt)
                 0xea => {}                   // NOP (do nothing, only increment program counter)
-                0x00 => return,              // BRK (stop execution)
+
+                // BRK
+                0x00 => {
+                    if self.mem_read_u16(0xFFFE) == 0x0000 {
+                        return;
+                    }
+                    self.program_counter += 1;
+                    self.interrupt(0xFFFE, true);
+                }
 
                 // UNOFFICIAL OPCODES
                 // NOP (do nothing, but read a value)

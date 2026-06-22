@@ -281,7 +281,7 @@ pub static CPU_OPCODES: &[OpCode] = &[
     // SAX (set memory value to result of register A AND register X)
     OpCode::new(0x87, "*SAX", 2, 3, AddressingMode::ZeroPage),
     OpCode::new(0x97, "*SAX", 2, 4, AddressingMode::ZeroPage_Y),
-    OpCode::new(0x83, "*SAX", 2, 3, AddressingMode::Indirect_X),
+    OpCode::new(0x83, "*SAX", 2, 6, AddressingMode::Indirect_X),
     OpCode::new(0x8f, "*SAX", 3, 4, AddressingMode::Absolute),
     // SBC (illegal alias for 0xe9)
     OpCode::new(0xeb, "*SBC", 2, 2, AddressingMode::Immediate),

@@ -34,7 +34,7 @@ pub fn trace(cpu: &mut CPU) -> String {
                 AddressingMode::Immediate => format!("#${:02x}", addr),
                 AddressingMode::ZeroPage => format!("${:02x} = {:02x}", mem_addr, stored_value),
                 AddressingMode::ZeroPage_X => {
-                    format!("${:02x},X @{:02x} = {:02x}", addr, mem_addr, stored_value,)
+                    format!("${:02x},X @ {:02x} = {:02x}", addr, mem_addr, stored_value,)
                 }
                 AddressingMode::ZeroPage_Y => {
                     format!("${:02x},Y @ {:02x} = {:02x}", addr, mem_addr, stored_value,)
@@ -59,7 +59,7 @@ pub fn trace(cpu: &mut CPU) -> String {
                 }
                 AddressingMode::NoneAddressing => {
                     // Assuming local jumps: BNE, BVS etc.
-                    let addr = (begin as usize + 2).wrapping_add_signed(addr as isize);
+                    let addr = (begin as usize + 2).wrapping_add_signed((addr as i8) as isize);
                     format!("${:04x}", addr)
                 }
 
@@ -97,7 +97,14 @@ pub fn trace(cpu: &mut CPU) -> String {
                         format!("${:04x}", addr)
                     }
                 }
-                AddressingMode::Absolute => format!("${:04x} = {:02x}", mem_addr, stored_value),
+                AddressingMode::Absolute => {
+                    if opcode.code == 0x20 {
+                        // JSR doesn't show value in nestest.log
+                        format!("${:04x}", mem_addr)
+                    } else {
+                        format!("${:04x} = {:02x}", mem_addr, stored_value)
+                    }
+                }
                 AddressingMode::Absolute_X => {
                     format!("${:04x},X @ {:04x} = {:02x}", addr, mem_addr, stored_value)
                 }
@@ -126,8 +133,16 @@ pub fn trace(cpu: &mut CPU) -> String {
     .to_string();
 
     format!(
-        "{:47} A:{:02x} X:{:02x} Y:{:02x} P:{:02x} SP:{:02x}",
-        asm_str, cpu.register_a, cpu.register_x, cpu.register_y, cpu.status, cpu.stack_pointer,
+        "{:47} A:{:02x} X:{:02x} Y:{:02x} P:{:02x} SP:{:02x} PPU:{:>3},{:>3} CYC:{}",
+        asm_str,
+        cpu.register_a,
+        cpu.register_x,
+        cpu.register_y,
+        cpu.status,
+        cpu.stack_pointer,
+        cpu.bus.ppu.scanline,
+        cpu.bus.ppu.cycles,
+        cpu.bus.cycles,
     )
     .to_ascii_uppercase()
 }
@@ -157,15 +172,15 @@ mod test {
             result.push(trace(cpu));
         });
         assert_eq!(
-            "0064  A2 01     LDX #$01                        A:01 X:02 Y:03 P:24 SP:FD",
+            "0064  A2 01     LDX #$01                        A:01 X:02 Y:03 P:24 SP:FD PPU:  0,  0 CYC:0",
             result[0]
         );
         assert_eq!(
-            "0066  CA        DEX                             A:01 X:01 Y:03 P:24 SP:FD",
+            "0066  CA        DEX                             A:01 X:01 Y:03 P:24 SP:FD PPU:  0,  6 CYC:2",
             result[1]
         );
         assert_eq!(
-            "0067  88        DEY                             A:01 X:00 Y:03 P:26 SP:FD",
+            "0067  88        DEY                             A:01 X:00 Y:03 P:26 SP:FD PPU:  0, 12 CYC:4",
             result[2]
         );
     }
@@ -192,7 +207,7 @@ mod test {
             result.push(trace(cpu));
         });
         assert_eq!(
-            "0064  11 33     ORA ($33),Y = 0400 @ 0400 = AA  A:00 X:00 Y:00 P:24 SP:FD",
+            "0064  11 33     ORA ($33),Y = 0400 @ 0400 = AA  A:00 X:00 Y:00 P:24 SP:FD PPU:  0,  0 CYC:0",
             result[0]
         );
     }

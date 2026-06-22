@@ -14,7 +14,7 @@ pub struct Bus {
     prg_rom: Vec<u8>,
     pub ppu: PPU,
 
-    cycles: u64,
+    pub cycles: u64,
 }
 
 impl Bus {
@@ -78,7 +78,7 @@ impl Mem for Bus {
             }
             PRG_ROM..=PRG_ROM_END => self.read_prg_rom(addr),
             _ => {
-                println!("Ignoring mem access at 0x{:04x}", addr);
+                // println!("Ignoring mem access at 0x{:04x}", addr);
                 0
             }
         }
@@ -113,7 +113,7 @@ impl Mem for Bus {
                 panic!("Attempt to write to cartridge ROM space!")
             }
             _ => {
-                println!("Ignoring mem access at 0x{:04x}", addr);
+                // println!("Ignoring mem access at 0x{:04x}", addr);
             }
         }
     }

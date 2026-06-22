@@ -381,6 +381,17 @@ consumed during interrupt handling.
 |------|---------|
 | `test_opcode_table_mode_length_consistency` | Iterates `CPU_OPCODES` and asserts that each entry's `len` matches the byte-count required by its `AddressingMode` (1 for `NoneAddressing`, 2 for immediate/zero-page/indirect modes, 3 for absolute modes). This catches copy-paste errors in the opcode table that the addressing-mode resolver tests cannot detect, because the resolver is tested via LDA entries only — bugs in any other instruction's table row (e.g. a wrong `mode` paired with a correct `len`) would otherwise go unnoticed until that opcode is exercised at runtime. |
 
+### Trace format (`src/trace.rs`)
+
+`trace(cpu)` formats the current CPU/PPU state into the nestest-compatible
+log line format. The output includes PC, hex dump, disassembly, registers,
+and cycle counts.
+
+| Test | Purpose |
+|------|---------|
+| `test_format_trace` | Verifies the trace output for a short program (LDX, DEX, DEY) includes correct PC, hex, mnemonic, register values, flags, stack pointer, PPU scanline/cycle, and CYC count. |
+| `test_format_mem_access` | Verifies memory-access addressing modes (Indirect_Y) are formatted correctly with resolved address and stored value. |
+
 ## PPU — AddrRegister (`src/ppu.rs`)
 
 The `AddrRegister` is a 16-bit address register with a two-write latch
@@ -519,7 +530,7 @@ These are **not** missing by accident. Do not add them without good reason.
 | Per-instruction flag tests for TAX / INX (beyond the INX overflow case) | They share `update_zero_and_negative_flags` with LDA, which is tested directly. The INX overflow test is kept because the wrap-around is a separate behavior. |
 | A `#[should_panic]` test for `AddressingMode::NoneAddressing` | The opcode table never pairs `NoneAddressing` with an instruction that calls `get_operand_address`, so the panic is unreachable defensive code. |
 | A dedicated BRK test | BRK is implicitly exercised by every test — they all rely on it to halt the `run` loop. |
-| Cycle-count assertions | Cycles are declared in `OPCODES_MAP` but the CPU does not currently consume or emit them. Add tests when cycle accounting is implemented. |
+| Cycle-count assertions (per-instruction) | Cycle accuracy is verified collectively via `test_format_trace` and the nestest integration test (`roms/nestest.log` diff). Individual cycle assertions are intentionally excluded because the nestest log provides a more thorough cross-check across all 8991 instructions than any hand-written unit test could. |
 | A test verifying every opcode in `CPU_OPCODES` has a dispatch arm in `run()` | The bug class (table entry exists, match arm missing) is caught for free by per-instruction functional tests — the first time the opcode is executed, the `_ => unimplemented!(...)` arm in `run()` panics with `opcode 0x{:02x} ({}) has no dispatch arm in run()`, naming the missing handler via the table's `mnemonic` field. A standalone meta-test would either need brittle `catch_unwind` plumbing or duplicate the match's structure. Once the dispatch grows unwieldy, the right fix is a structural refactor (e.g. function-pointer dispatch table on `OpCode`), not a test. |
 
 ## Guidance for adding new tests
