@@ -13,6 +13,7 @@ pub struct Bus {
     cpu_vram: [u8; 2048],
     prg_rom: Vec<u8>,
     pub ppu: PPU,
+    pub frame_ready: bool,
 
     pub cycles: u64,
 }
@@ -25,6 +26,7 @@ impl Bus {
             cpu_vram: [0; 2048],
             prg_rom: rom.prg_rom,
             ppu: ppu,
+            frame_ready: false,
             cycles: 0,
         }
     }
@@ -49,7 +51,11 @@ impl Bus {
 
     pub fn tick(&mut self, cycles: u16) {
         self.cycles += cycles as u64;
+        let nmi_before = self.ppu.nmi;
         self.ppu.tick(cycles as u16 * 3);
+        if !nmi_before && self.ppu.nmi {
+            self.frame_ready = true;
+        }
     }
 
     pub fn poll_nmi_status(&mut self) -> bool {

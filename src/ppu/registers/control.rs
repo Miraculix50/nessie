@@ -51,4 +51,28 @@ impl ControlRegister {
     pub fn generate_vblank_nmi(&self) -> bool {
         self.contains(ControlRegister::GENERATE_NMI)
     }
+
+    pub fn background_pattern_addr(&self) -> u16 {
+        if !self.contains(ControlRegister::BACKGROUND_PATTERN_ADDR) {
+            0
+        } else {
+            0x1000
+        }
+    }
+
+    pub fn sprite_pattern_addr(&self) -> u16 {
+        if !self.contains(ControlRegister::SPRITE_PATTERN_ADDR) {
+            0
+        } else {
+            0x1000
+        }
+    }
+
+    pub fn sprite_size(&self) -> u8 {
+        if !self.contains(ControlRegister::SPRITE_SIZE) {
+            8
+        } else {
+            16
+        }
+    }
 }

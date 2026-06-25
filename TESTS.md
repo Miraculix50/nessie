@@ -520,6 +520,36 @@ checks whether the PPU has a pending NMI interrupt (`bool`).
 | `test_bus_poll_nmi_status_returns_true_when_pending` | After VBlank with NMI enabled, `poll_nmi_status` returns `true`. |
 | `test_bus_poll_nmi_status_returns_false_when_no_nmi` | Without a pending NMI, `poll_nmi_status` returns `false`. |
 
+### Tile Viewer — `show_tile` (`src/tile_viewer.rs`)
+
+`show_tile(chr_rom, bank, tile_n)` decodes a single 8×8 CHR ROM tile into a
+`Frame`. Each tile uses 16 bytes (2 bits per pixel, plane-separated as upper/lower
+byte pairs 8 bytes apart). The color index is mapped through `SYSTEM_PALLETE`
+with hardcoded palette slots.
+
+| Test | Purpose |
+|------|---------|
+| `test_show_tile_all_zeros` | All tile bytes are 0 → every pixel has value 0 → uses `SYSTEM_PALLETE[0x01]`. Verifies the zero path produces correct RGB. |
+| `test_show_tile_all_ones` | All tile bytes are 0xFF → every pixel has value 3 → uses `SYSTEM_PALLETE[0x30]`. Verifies the saturated path. |
+| `test_show_tile_first_pixel_value_3` | Sets only bit 7 of byte 0 and byte 8 → pixel (0,0) = value 3, others = 0. Verifies the bit-extraction logic for a single pixel. |
+| `test_show_tile_bank_select` | Places the test pattern in bank 1 (offset `0x1000`), reads tile 0 → asserts pixel (0,0) = value 3. Verifies bank offset calculation. |
+| `test_show_tile_different_pixel_values` | Row 0 has all 4 pixel values (0, 1, 2, 3) in the first 4 pixels — asserts each pixel maps to the correct palette entry. Verifies the complete decode chain. |
+
+### Background Rendering — `render()` (`src/render/mod.rs`)
+
+`render(ppu, frame)` reads the first nametable (960 bytes from VRAM), decodes
+each tile from CHR ROM, and draws it into the frame. Each 8×8 pixel tile is
+composed from 16 bytes of CHR ROM (2-bit indexed color, plane-separated).
+The colors are mapped through `SYSTEM_PALLETE`.
+
+| Test | Purpose |
+|------|---------|
+| `test_render_all_zeros` | VRAM all 0, CHR ROM all 0 → every pixel has value 0 → `SYSTEM_PALLETE[0x01]`. Verifies the zero-decode path across all pixels. |
+| `test_render_tile_fills_8x8_area` | CHR ROM tile 0 filled with `0xFF` → every pixel has value 3 → `SYSTEM_PALLETE[0x30]`. Verifies all 64 pixels of the first tile are set. |
+| `test_render_second_tile_row_y_offset` | Tile ID `1` at VRAM offset 32 (row 1, column 0) → pixel `(0, 8)` is set. Verifies the row-major 32-column layout and pixel Y offset. |
+| `test_render_bank_select` | Ctrl bit 4 set (bank 1), tile data at `0x1000` in CHR ROM → pixel `(0, 0)` renders from bank 1. Verifies `background_pattern_addr()` is respected. |
+| `test_render_tile_with_mixed_pixel_values` | First 4 pixels of row 0 are set to values 3, 2, 1, 0. Verifies the bit extraction (upper/lower plane) maps each 2-bit pixel value to the correct palette entry. |
+
 ## Intentionally excluded tests
 
 These are **not** missing by accident. Do not add them without good reason.
