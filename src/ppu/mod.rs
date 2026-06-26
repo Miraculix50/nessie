@@ -10,10 +10,7 @@ pub mod registers;
 
 pub struct PPU {
     pub chr_rom: Vec<u8>,
-    pub palette_table: [u8; 32],
     pub vram: [u8; 2048],
-    pub oam_data: [u8; 256],
-
     pub mirroring: Mirroring,
 
     pub ctrl: ControlRegister,
@@ -21,6 +18,10 @@ pub struct PPU {
     pub status: StatusRegister,
     pub scroll: ScrollRegister,
     pub addr: AddrRegister,
+
+    pub oam_addr: u8,
+    pub oam_data: [u8; 256],
+    pub palette_table: [u8; 32],
 
     internal_data_buf: u8,
 
@@ -33,15 +34,18 @@ impl PPU {
     pub fn new(chr_rom: Vec<u8>, mirroring: Mirroring) -> Self {
         PPU {
             chr_rom: chr_rom,
-            mirroring: mirroring,
             vram: [0; 2048],
-            oam_data: [0; 64 * 4],
-            palette_table: [0; 32],
+            mirroring: mirroring,
             ctrl: ControlRegister::new(),
             mask: MaskRegister::new(),
             status: StatusRegister::new(),
             scroll: ScrollRegister::new(),
             addr: AddrRegister::new(),
+
+            oam_addr: 0,
+            oam_data: [0; 64 * 4],
+            palette_table: [0; 32],
+
             internal_data_buf: 0,
 
             scanline: 0,
@@ -51,11 +55,12 @@ impl PPU {
     }
 
     fn palette_addr(addr: u16) -> usize {
-        let addr = match addr {
-            0x3f10 | 0x3f14 | 0x3f18 | 0x3fc => addr - 0x10,
-            _ => addr,
+        let mirrored_addr = addr & 0x001F;
+        let addr = match mirrored_addr {
+            0x10 | 0x14 | 0x18 | 0x1c => mirrored_addr - 0x10,
+            _ => mirrored_addr,
         };
-        (addr - 0x3f00) as usize
+        addr as usize
     }
 
     pub fn write_to_ppu_addr(&mut self, value: u8) {
@@ -76,6 +81,26 @@ impl PPU {
 
     pub fn write_to_scroll(&mut self, value: u8) {
         self.scroll.write(value);
+    }
+
+    pub fn write_to_oam_addr(&mut self, value: u8) {
+        self.oam_addr = value;
+    }
+
+    pub fn write_to_oam_data(&mut self, value: u8) {
+        self.oam_data[self.oam_addr as usize] = value;
+        self.oam_addr = self.oam_addr.wrapping_add(1);
+    }
+
+    pub fn read_oam_data(&self) -> u8 {
+        self.oam_data[self.oam_addr as usize]
+    }
+
+    pub fn write_oam_dma(&mut self, data: &[u8; 256]) {
+        for x in data.iter() {
+            self.oam_data[self.oam_addr as usize] = *x;
+            self.oam_addr = self.oam_addr.wrapping_add(1);
+        }
     }
 
     pub fn read_status(&mut self) -> u8 {
@@ -125,10 +150,13 @@ impl PPU {
                 self.internal_data_buf = self.vram[self.mirror_vram_addr(addr) as usize];
                 result
             }
-            0x3000..=0x3eff => unimplemented!(
-                "Address space 0x3000..0x3eff is not expected to be used, requested = {}",
-                addr
-            ),
+            0x3000..=0x3eff => {
+                // unimplemented!(
+                //     "Address space 0x3000..0x3eff is not expected to be used, requested = {}",
+                //     addr
+                // )
+                0
+            }
             0x3f00..=0x3fff => self.palette_table[Self::palette_addr(addr)],
             _ => panic!("Unexpected access to mirrored space {}", addr),
         }
@@ -142,10 +170,12 @@ impl PPU {
             0x2000..=0x2fff => {
                 self.vram[self.mirror_vram_addr(addr) as usize] = value;
             }
-            0x3000..=0x3eff => unimplemented!(
-                "Address space 0x3000..0x3eff is not expected to be used, requested = {}",
-                addr
-            ),
+            0x3000..=0x3eff => {
+                // unimplemented!(
+                //     "Address space 0x3000..0x3eff is not expected to be used, requested = {}",
+                //     addr
+                // )
+            }
             0x3f00..=0x3fff => self.palette_table[Self::palette_addr(addr)] = value,
             _ => panic!("Unexpected access to mirrored space {}", addr),
         }
@@ -472,5 +502,54 @@ mod tests {
         ppu.write_data(0x22);
         assert_eq!(ppu.vram[0x000], 0x11);
         assert_eq!(ppu.vram[0x001], 0x22);
+    }
+
+    // ----- OAM (Object Attribute Memory) -----
+
+    #[test]
+    fn test_oam_addr_write_sets_current_position() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.write_to_oam_addr(0x10);
+        assert_eq!(ppu.oam_addr, 0x10);
+    }
+
+    #[test]
+    fn test_oam_write_read_round_trip() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.write_to_oam_addr(0x10);
+        ppu.write_to_oam_data(0x66);
+        ppu.write_to_oam_data(0x77);
+
+        ppu.write_to_oam_addr(0x10);
+        assert_eq!(ppu.read_oam_data(), 0x66);
+
+        ppu.write_to_oam_addr(0x11);
+        assert_eq!(ppu.read_oam_data(), 0x77);
+    }
+
+    #[test]
+    fn test_oam_addr_wraps_after_255() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.write_to_oam_addr(0xFF);
+        ppu.write_to_oam_data(0xAA);
+        assert_eq!(ppu.oam_addr, 0x00);
+        ppu.write_to_oam_addr(0xFF);
+        assert_eq!(ppu.read_oam_data(), 0xAA);
+    }
+
+    #[test]
+    fn test_oam_dma_writes_256_bytes() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut data = [0x66; 256];
+        data[0] = 0x77;
+        data[255] = 0x88;
+
+        ppu.write_to_oam_addr(0x10);
+        ppu.write_oam_dma(&data);
+
+        ppu.write_to_oam_addr(0x10);
+        assert_eq!(ppu.read_oam_data(), 0x77);
+        ppu.write_to_oam_addr(0x0F); // last byte (offset 0x10 + 255) wrapped to 0x0F
+        assert_eq!(ppu.read_oam_data(), 0x88);
     }
 }

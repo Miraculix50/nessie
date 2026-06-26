@@ -535,6 +535,20 @@ with hardcoded palette slots.
 | `test_show_tile_bank_select` | Places the test pattern in bank 1 (offset `0x1000`), reads tile 0 → asserts pixel (0,0) = value 3. Verifies bank offset calculation. |
 | `test_show_tile_different_pixel_values` | Row 0 has all 4 pixel values (0, 1, 2, 3) in the first 4 pixels — asserts each pixel maps to the correct palette entry. Verifies the complete decode chain. |
 
+### PPU — OAM (Object Attribute Memory)
+
+The PPU has internal RAM (OAM, 256 bytes) to store sprite states. The CPU
+accesses it via `$2003` (OAM_ADDR — set current position), `$2004`
+(OAM_DATA — read/write byte and auto-increment), and `$4014` (OAM DMA —
+bulk-transfer 256 bytes from CPU RAM to OAM).
+
+| Test | Purpose |
+|------|---------|
+| `test_oam_addr_write_sets_current_position` | `write_to_oam_addr(0x10)` → `oam_addr == 0x10`. Verifies the position register is set. |
+| `test_oam_write_read_round_trip` | Write two bytes at 0x10 and 0x11, rewind to 0x10, read both back. Verifies sequential writes increment `oam_addr` and reads return correct values without incrementing. |
+| `test_oam_addr_wraps_after_255` | Set address to 0xFF, write → wraps to 0x00, data lands at 0xFF. Verifies `wrapping_add(1)` behavior. |
+| `test_oam_dma_writes_256_bytes` | DMA writes 256 bytes starting at offset 0x10, checks first and last (wrapped) byte. Verifies bulk transfer and wrap-around. |
+
 ### Background Rendering — `render()` (`src/render/mod.rs`)
 
 `render(ppu, frame)` reads the first nametable (960 bytes from VRAM), decodes
@@ -549,6 +563,25 @@ The colors are mapped through `SYSTEM_PALLETE`.
 | `test_render_second_tile_row_y_offset` | Tile ID `1` at VRAM offset 32 (row 1, column 0) → pixel `(0, 8)` is set. Verifies the row-major 32-column layout and pixel Y offset. |
 | `test_render_bank_select` | Ctrl bit 4 set (bank 1), tile data at `0x1000` in CHR ROM → pixel `(0, 0)` renders from bank 1. Verifies `background_pattern_addr()` is respected. |
 | `test_render_tile_with_mixed_pixel_values` | First 4 pixels of row 0 are set to values 3, 2, 1, 0. Verifies the bit extraction (upper/lower plane) maps each 2-bit pixel value to the correct palette entry. |
+
+### Background Rendering — Palette (`src/render/mod.rs`)
+
+`bg_palette(ppu, tile_column, tile_row) -> [u8; 4]` extracts the 4-color palette
+for a background tile from the attribute table. Each attribute byte controls
+4 meta-tiles (2×2 tiles each), split into four 2-bit palette selectors.
+
+`sprite_palette(ppu, palette_idx) -> [u8; 4]` returns the 4-color sprite
+palette, with index 0 forced to 0 (transparent).
+
+| Test | Purpose |
+|------|---------|
+| `test_bg_palette_attr_byte_returns_four_palette_indices` | Attribute byte `0b11100100` maps to palette indices 0, 1, 2, 3 for the four quadrants. Verifies the 2-bit extraction for each meta-tile position. |
+| `test_bg_palette_returns_universal_bg_as_first_element` | `pal[0]` is always `palette_table[0]` (universal background color), regardless of which palette is selected. |
+| `test_bg_palette_two_neighboring_tiles_same_meta_tile` | Tiles at (0,0) and (2,0) sit in different quadrants of the same 4×4 block → return different palettes. |
+| `test_sprite_palette_first_color_is_zero` | `sprite_palette(&ppu, 0)[0]` is always 0 (transparent for sprites). |
+| `test_sprite_palette_index_maps_to_correct_offset` | Sprite palette 0 reads colors from `palette_table[0x11..0x13]`. |
+| `test_sprite_palette_index_1` | Sprite palette 1 reads colors from `palette_table[0x15..0x17]`. |
+| `test_render_uses_bg_palette_for_tile_colors` | After palette integration, pixel colors in `render()` come from `palette_table` entries via `bg_palette`, not hardcoded `SYSTEM_PALLETE` slots. |
 
 ## Intentionally excluded tests
 

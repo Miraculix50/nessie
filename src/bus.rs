@@ -1,11 +1,16 @@
 use crate::cartridge::Rom;
 use crate::cpu::Mem;
+use crate::joypad::Joypad;
 use crate::ppu::PPU;
 
 const RAM: u16 = 0x0000;
 const RAM_MIRRORS_END: u16 = 0x1FFF;
 const PPU_REGISTERS: u16 = 0x2000;
 const PPU_REGISTERS_MIRRORS_END: u16 = 0x3FFF;
+const APU: u16 = 0x4000;
+const APU_END: u16 = 0x4015;
+const JOYPAD1: u16 = 0x4016;
+const JOYPAD2: u16 = 0x4017;
 const PRG_ROM: u16 = 0x8000;
 const PRG_ROM_END: u16 = 0xFFFF;
 
@@ -13,8 +18,8 @@ pub struct Bus {
     cpu_vram: [u8; 2048],
     prg_rom: Vec<u8>,
     pub ppu: PPU,
+    pub joypad1: Joypad,
     pub frame_ready: bool,
-
     pub cycles: u64,
 }
 
@@ -26,6 +31,7 @@ impl Bus {
             cpu_vram: [0; 2048],
             prg_rom: rom.prg_rom,
             ppu: ppu,
+            joypad1: Joypad::new(),
             frame_ready: false,
             cycles: 0,
         }
@@ -71,16 +77,27 @@ impl Mem for Bus {
                 self.cpu_vram[mirrored_addr as usize]
             }
             0x2000 | 0x2001 | 0x2003 | 0x2005 | 0x2006 | 0x4014 => {
-                panic!(
-                    "Attempt to read from write-only PPU register with address 0x{:04x}",
-                    addr
-                )
+                // panic!(
+                //     "Attempt to read from write-only PPU register with address 0x{:04x}",
+                //     addr
+                // )
+                0
             }
             0x2002 => self.ppu.read_status(),
+            0x2004 => self.ppu.read_oam_data(),
             0x2007 => self.ppu.read_data(),
             0x2008..=PPU_REGISTERS_MIRRORS_END => {
                 let mirrored_addr = addr & 0b00100000_00000111;
                 self.mem_read(mirrored_addr)
+            }
+            APU..=APU_END => {
+                // ignore APU
+                0
+            }
+            JOYPAD1 => self.joypad1.read(),
+            JOYPAD2 => {
+                // ignore JOYPAD2
+                0
             }
             PRG_ROM..=PRG_ROM_END => self.read_prg_rom(addr),
             _ => {
@@ -98,16 +115,9 @@ impl Mem for Bus {
             }
             0x2000 => self.ppu.write_to_ctrl(data),
             0x2001 => self.ppu.write_to_mask(data),
-            0x2002 => {
-                panic!(
-                    "Attempt to write to read-only PPU register with address 0x{:04x}",
-                    addr
-                )
-            }
-            0x2003 | 0x2004 => unimplemented!(
-                "Attempt to write to PPU register with the address 0x{:04x}",
-                addr
-            ),
+            0x2002 => panic!("Attempt to write to PPU status register"),
+            0x2003 => self.ppu.write_to_oam_addr(data),
+            0x2004 => self.ppu.write_to_oam_data(data),
             0x2005 => self.ppu.write_to_scroll(data),
             0x2006 => self.ppu.write_to_ppu_addr(data),
             0x2007 => self.ppu.write_data(data),
@@ -115,8 +125,25 @@ impl Mem for Bus {
                 let mirrored_addr = addr & 0b00100000_00000111;
                 self.mem_write(mirrored_addr, data);
             }
+            0x4014 => {
+                let mut buffer: [u8; 256] = [0; 256];
+                let hi = (data as u16) << 8;
+                for i in 0..256u16 {
+                    buffer[i as usize] = self.mem_read(hi + i);
+                }
+
+                self.ppu.write_oam_dma(&buffer);
+            }
+            APU..=APU_END => {
+                // ignore APU
+            }
+            JOYPAD1 => self.joypad1.write(data),
+            JOYPAD2 => {
+                // ignore JOYPAD2
+            }
             PRG_ROM..=PRG_ROM_END => {
-                panic!("Attempt to write to cartridge ROM space!")
+                // panic!("Attempt to write to cartridge ROM space!")
+                println!("Attempt to write to cartridge ROM space!")
             }
             _ => {
                 // println!("Ignoring mem access at 0x{:04x}", addr);
