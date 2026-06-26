@@ -23,7 +23,7 @@ const SCALE: f64 = 2.0;
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 240;
 
-pub fn handle_input(cpu: &mut CPU, event_pump: &mut EventPump) {
+fn handle_input(cpu: &mut CPU, event_pump: &mut EventPump) {
     for event in event_pump.poll_iter() {
         match event {
             Event::Quit { .. }
