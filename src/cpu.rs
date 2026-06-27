@@ -236,21 +236,6 @@ impl CPU {
         self.add_to_register_a(value ^ 0xFF);
     }
 
-    /// Helper function to perform an AND with register A
-    fn and_with_register_a(&mut self, value: u8) {
-        self.set_register_a(value & self.register_a);
-    }
-
-    /// Helper function to perform an XOR with register A
-    fn xor_with_register_a(&mut self, value: u8) {
-        self.set_register_a(value ^ self.register_a);
-    }
-
-    /// Helper function to perform an OR with register A
-    fn or_with_register_a(&mut self, value: u8) {
-        self.set_register_a(value | self.register_a);
-    }
-
     /// General function for branch opcodes
     fn branch(&mut self, condition: bool) {
         if condition {

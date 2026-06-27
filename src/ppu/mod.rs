@@ -1,5 +1,4 @@
 use crate::cartridge::Mirroring;
-use crate::ppu;
 use registers::addr::AddrRegister;
 use registers::control::ControlRegister;
 use registers::mask::MaskRegister;
@@ -185,6 +184,10 @@ impl PPU {
     pub fn tick(&mut self, cycles: u16) -> bool {
         self.cycles += cycles;
         if self.cycles >= 341 {
+            if self.is_sprite_zero_hit(self.cycles) {
+                self.status.set_sprite_zero_hit(true);
+            }
+
             self.cycles -= 341;
             self.scanline += 1;
 
@@ -208,6 +211,12 @@ impl PPU {
         }
 
         return false;
+    }
+
+    fn is_sprite_zero_hit(&self, cycle: u16) -> bool {
+        let y = self.oam_data[0] as u16;
+        let x = self.oam_data[3] as u16;
+        y == self.scanline && x <= cycle && self.mask.show_sprites()
     }
 
     pub fn poll_nmi_interrupt(&mut self) -> bool {

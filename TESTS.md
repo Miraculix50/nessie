@@ -418,9 +418,9 @@ and NMI generation.
 | `test_ctrl_new_defaults_to_zero` | `from_bits_truncate(0)` must produce an all-clear register. |
 | `test_ctrl_vram_increment` | Default (bit 2 clear) → 1; bit 2 set → 32. Exercises the only method with a numeric return value beyond booleans. |
 
-Skipped: `nametable_addr`, `generate_vblank_nmi`, `sprt_pattern_addr`,
-`bknd_pattern_addr`, `sprite_size` — not yet implemented; add tests when
-these methods are added to `ControlRegister`.
+Skipped: `generate_vblank_nmi`, `sprt_pattern_addr`,
+`bknd_pattern_addr`, `sprite_size` — trivial bitfield methods,
+covered implicitly by integration tests (NMI, bank select tests).
 
 ### PPU — MaskRegister (`src/ppu/registers/mask.rs`)
 
@@ -566,8 +566,8 @@ The colors are mapped through `SYSTEM_PALLETE`.
 
 ### Background Rendering — Palette (`src/render/mod.rs`)
 
-`bg_palette(ppu, tile_column, tile_row) -> [u8; 4]` extracts the 4-color palette
-for a background tile from the attribute table. Each attribute byte controls
+`bg_palette(ppu, attribute_table, tile_column, tile_row) -> [u8; 4]` extracts the 4-color palette
+for a background tile from an attribute table slice. Each attribute byte controls
 4 meta-tiles (2×2 tiles each), split into four 2-bit palette selectors.
 
 `sprite_palette(ppu, palette_idx) -> [u8; 4]` returns the 4-color sprite
@@ -582,6 +582,20 @@ palette, with index 0 forced to 0 (transparent).
 | `test_sprite_palette_index_maps_to_correct_offset` | Sprite palette 0 reads colors from `palette_table[0x11..0x13]`. |
 | `test_sprite_palette_index_1` | Sprite palette 1 reads colors from `palette_table[0x15..0x17]`. |
 | `test_render_uses_bg_palette_for_tile_colors` | After palette integration, pixel colors in `render()` come from `palette_table` entries via `bg_palette`, not hardcoded `SYSTEM_PALLETE` slots. |
+
+### Scrolling — `render_name_table()` + `Rect` (`src/render/mod.rs`)
+
+Chapter 8 adds scrolling support. `render_name_table(ppu, frame, name_table, view_port, shift_x, shift_y)`
+renders a single nametable clipped to a `Rect` viewport and shifted to an
+absolute frame position. `render()` selects the main/second nametable based on
+`ctrl.nametable_addr()` and mirroring, then calls `render_name_table` for each.
+
+| Test | Purpose |
+|------|---------|
+| `test_render_scroll_x_zero_renders_main_nametable` | `scroll_x=0` → only the main nametable is rendered; second nametable is not rendered. Verifies the no-scroll baseline hasn't regressed. |
+| `test_render_scroll_x_shifts_and_wraps` | `scroll_x=8` → main NT is shifted left by 8, and the rightmost 8 pixels wrap to the second NT's leftmost column. Verifies horizontal wrapping works. |
+| `test_render_scroll_x_second_nametable_different_tile` | Second NT contains a different tile from the main NT. After wrap, the wrapped pixels come from the correct (different) tile. Verifies palette/CHR data follows the correct nametable. |
+| `test_render_vertical_nametable_selection` | With vertical mirroring and base nametable `$2800`, `scroll_y=240` renders the second nametable at the top after vertical wrap. Verifies vertical nametable selection. |
 
 ## Intentionally excluded tests
 

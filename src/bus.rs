@@ -5,7 +5,7 @@ use crate::ppu::PPU;
 
 const RAM: u16 = 0x0000;
 const RAM_MIRRORS_END: u16 = 0x1FFF;
-const PPU_REGISTERS: u16 = 0x2000;
+const PPU_REGISTERS_MIRRORS: u16 = 0x2000;
 const PPU_REGISTERS_MIRRORS_END: u16 = 0x3FFF;
 const APU: u16 = 0x4000;
 const APU_END: u16 = 0x4015;
@@ -86,7 +86,7 @@ impl Mem for Bus {
             0x2002 => self.ppu.read_status(),
             0x2004 => self.ppu.read_oam_data(),
             0x2007 => self.ppu.read_data(),
-            0x2008..=PPU_REGISTERS_MIRRORS_END => {
+            PPU_REGISTERS_MIRRORS..=PPU_REGISTERS_MIRRORS_END => {
                 let mirrored_addr = addr & 0b00100000_00000111;
                 self.mem_read(mirrored_addr)
             }
@@ -121,7 +121,7 @@ impl Mem for Bus {
             0x2005 => self.ppu.write_to_scroll(data),
             0x2006 => self.ppu.write_to_ppu_addr(data),
             0x2007 => self.ppu.write_data(data),
-            0x2008..=PPU_REGISTERS_MIRRORS_END => {
+            PPU_REGISTERS_MIRRORS..=PPU_REGISTERS_MIRRORS_END => {
                 let mirrored_addr = addr & 0b00100000_00000111;
                 self.mem_write(mirrored_addr, data);
             }

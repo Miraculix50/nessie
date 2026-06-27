@@ -128,7 +128,7 @@ fn main() {
         .create_texture_target(PixelFormatEnum::RGB24, WIDTH, HEIGHT)
         .unwrap();
 
-    let bytes = std::fs::read("roms/alter_ego/Alter_Ego.nes").unwrap();
+    let bytes = std::fs::read("roms/PacMan.nes").unwrap();
     let rom = Rom::new(&bytes).unwrap();
     let bus = Bus::new(rom);
     let mut cpu = CPU::new(bus);

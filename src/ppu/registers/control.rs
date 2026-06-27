@@ -75,4 +75,14 @@ impl ControlRegister {
             16
         }
     }
+
+    pub fn nametable_addr(&self) -> u16 {
+        match self.bits() & 0b11 {
+            0 => return 0x2000,
+            1 => return 0x2400,
+            2 => return 0x2800,
+            3 => return 0x2C00,
+            _ => unreachable!(),
+        }
+    }
 }
