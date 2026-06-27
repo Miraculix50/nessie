@@ -128,10 +128,11 @@ fn main() {
         .create_texture_target(PixelFormatEnum::RGB24, WIDTH, HEIGHT)
         .unwrap();
 
-    let bytes = std::fs::read("roms/PacMan.nes").unwrap();
+    let bytes = std::fs::read("roms/nestest.nes").unwrap();
     let rom = Rom::new(&bytes).unwrap();
     let bus = Bus::new(rom);
     let mut cpu = CPU::new(bus);
+    cpu.reset();
     let mut frame = Frame::new();
 
     cpu.run_with_callback(|cpu| {

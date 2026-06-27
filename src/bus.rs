@@ -5,7 +5,7 @@ use crate::ppu::PPU;
 
 const RAM: u16 = 0x0000;
 const RAM_MIRRORS_END: u16 = 0x1FFF;
-const PPU_REGISTERS_MIRRORS: u16 = 0x2000;
+const PPU_REGISTERS_MIRRORS: u16 = 0x2008;
 const PPU_REGISTERS_MIRRORS_END: u16 = 0x3FFF;
 const APU: u16 = 0x4000;
 const APU_END: u16 = 0x4015;
