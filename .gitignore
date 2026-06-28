@@ -1,3 +1,4 @@
+# Rust files
 /target
 
 # macOS system files
@@ -5,3 +6,7 @@
 
 # ROM files
 /roms
+
+# AI Agent files
+*.md
+.opencode/
