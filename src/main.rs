@@ -128,7 +128,8 @@ fn main() {
         .create_texture_target(PixelFormatEnum::RGB24, WIDTH, HEIGHT)
         .unwrap();
 
-    let bytes = std::fs::read("roms/nestest.nes").unwrap();
+    let rom_path = std::env::var("ROM_PATH").unwrap();
+    let bytes = std::fs::read(rom_path).unwrap();
     let rom = Rom::new(&bytes).unwrap();
     let bus = Bus::new(rom);
     let mut cpu = CPU::new(bus);
