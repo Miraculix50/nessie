@@ -39,6 +39,10 @@ impl StatusRegister {
         self.contains(StatusRegister::VBLANK)
     }
 
+    pub fn is_sprite_zero_hit(&self) -> bool {
+        self.contains(StatusRegister::SPRITE_0_HIT)
+    }
+
     pub fn snapshot(&self) -> u8 {
         self.bits()
     }

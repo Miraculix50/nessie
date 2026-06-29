@@ -17,7 +17,6 @@ use crate::bus::Bus;
 use crate::cartridge::Rom;
 use crate::cpu::CPU;
 use crate::joypad::JoypadButton;
-use crate::render::frame::Frame;
 
 const SCALE: f64 = 2.0;
 const WIDTH: u32 = 256;
@@ -134,15 +133,13 @@ fn main() {
     let bus = Bus::new(rom);
     let mut cpu = CPU::new(bus);
     cpu.reset();
-    let mut frame = Frame::new();
 
     cpu.run_with_callback(|cpu| {
         if cpu.bus.frame_ready {
-            render::render(&cpu.bus.ppu, &mut frame);
             cpu.bus.frame_ready = false;
 
             texture
-                .update(None, &frame.data, WIDTH as usize * 3)
+                .update(None, &cpu.bus.ppu.frame.data, WIDTH as usize * 3)
                 .unwrap();
             canvas.copy(&texture, None, None).unwrap();
             canvas.present();

@@ -1,4 +1,6 @@
 use crate::cartridge::Mirroring;
+use crate::render::frame::Frame;
+use crate::render::palette;
 use registers::addr::AddrRegister;
 use registers::control::ControlRegister;
 use registers::mask::MaskRegister;
@@ -26,6 +28,7 @@ pub struct PPU {
 
     pub(crate) scanline: u16,
     pub(crate) cycles: u16,
+    pub frame: Frame,
     pub nmi: bool,
 }
 
@@ -49,6 +52,7 @@ impl PPU {
 
             scanline: 0,
             cycles: 0,
+            frame: Frame::new(),
             nmi: false,
         }
     }
@@ -181,54 +185,274 @@ impl PPU {
         self.increment_vram_addr();
     }
 
-    pub fn tick(&mut self, cycles: u16) -> bool {
-        self.cycles += cycles;
-        if self.cycles >= 341 {
-            if self.is_sprite_zero_hit(self.cycles) {
-                self.status.set_sprite_zero_hit(true);
+    pub fn poll_nmi_interrupt(&mut self) -> bool {
+        let nmi_status = self.nmi;
+        self.nmi = false;
+        nmi_status
+    }
+
+    /// Tick the PPU (cycle-accurate) the given amount of cycles, rendering one pixel at a time
+    pub fn tick(&mut self, ppu_cycles: u16) -> bool {
+        for _ in 0..ppu_cycles {
+            if self.scanline < 240 && self.cycles < 256 {
+                let pixel = self.render_pixel();
+                let rgb = palette::SYSTEM_PALLETE[pixel as usize];
+                self.frame
+                    .set_pixel(self.cycles as usize, self.scanline as usize, rgb);
             }
 
-            self.cycles -= 341;
-            self.scanline += 1;
+            // Sprite zero hit check
+            if self.cycles == self.oam_data[3] as u16
+                && self.scanline == self.oam_data[0] as u16
+                && self.mask.show_sprites()
+                && self.mask.show_background()
+            {}
 
-            if self.scanline == 241 {
-                // First off-screen scanline (vblank phase)
-                self.status.set_vblank_status(true);
-                self.status.set_sprite_zero_hit(false);
-                if self.ctrl.generate_vblank_nmi() {
-                    self.nmi = true;
+            self.cycles += 1;
+            if self.cycles == 341 {
+                self.cycles = 0;
+                self.scanline += 1;
+                // VBlank phase
+                if self.scanline == 241 {
+                    self.status.set_vblank_status(true);
+                    self.status.set_sprite_zero_hit(false);
+                    if self.ctrl.generate_vblank_nmi() {
+                        self.nmi = true;
+                    }
                 }
-            }
-
-            if self.scanline >= 262 {
-                // Last scanline reached
-                self.scanline = 0;
-                self.nmi = false;
-                self.status.set_sprite_zero_hit(false);
-                self.status.reset_vblank_status();
-                return true;
+                // Frame end
+                if self.scanline >= 262 {
+                    self.scanline = 0;
+                    self.nmi = false;
+                    self.status.set_sprite_zero_hit(false);
+                    self.status.reset_vblank_status();
+                    return true;
+                }
             }
         }
 
         return false;
     }
 
-    fn is_sprite_zero_hit(&self, cycle: u16) -> bool {
-        let y = self.oam_data[0] as u16;
-        let x = self.oam_data[3] as u16;
-        y == self.scanline && x <= cycle && self.mask.show_sprites()
+    fn render_pixel(&mut self) -> u8 {
+        let bg = self.fetch_bg_pixel();
+
+        // Sprite zero hit check
+        if self.is_sprite_zero_hit(bg) {
+            self.status.set_sprite_zero_hit(true);
+        }
+
+        // Draw sprite
+        if let Some(s) = self.fetch_sprite_pixel() {
+            if s != 0 {
+                return s;
+            }
+        }
+
+        bg // No sprite or transparent sprite -> bg
     }
 
-    pub fn poll_nmi_interrupt(&mut self) -> bool {
-        let nmi_status = self.nmi;
-        self.nmi = false;
-        nmi_status
+    /// Fetches the sprite-pixel for the currently rendering pixel
+    fn fetch_sprite_pixel(&self) -> Option<u8> {
+        for i in (0..64).rev() {
+            // find sprite (highest wins)
+            let oam = &self.oam_data[(i * 4)..(i * 4 + 4)];
+            let y = oam[0] as u16;
+            let tile = oam[1] as u16;
+            let attr = oam[2] as u16;
+            let x = oam[3] as u16;
+
+            let dy = self.scanline.wrapping_sub(y);
+            let dx = self.cycles.wrapping_sub(x);
+            if dy < 8 && dx < 8 {
+                let mut fy = self.scanline - y;
+                let mut fx = self.cycles - x;
+
+                if attr & 0x80 != 0 {
+                    // flip vertical
+                    fy = 7 - fy
+                }
+                if attr & 0x40 != 0 {
+                    // flip horizontal
+                    fx = 7 - fx
+                }
+
+                let bank = self.ctrl.sprite_pattern_addr();
+                let tile_addr = (bank + tile * 16 + fy) as usize;
+                let p0 = self.chr_rom[tile_addr];
+                let p1 = self.chr_rom[tile_addr + 8];
+                let value = ((p1 >> (7 - fx)) & 1) << 1 | ((p0 >> (7 - fx)) & 1);
+
+                if value != 0 {
+                    let palette_idx = attr & 0b11;
+                    let start = (0x11 + palette_idx * 4) as usize;
+                    let color = match value {
+                        1 => self.palette_table[start],
+                        2 => self.palette_table[start + 1],
+                        3 => self.palette_table[start + 2],
+                        _ => unreachable!(),
+                    };
+                    return Some(color);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Fetches the background-pixel for the currently rendering pixel
+    fn fetch_bg_pixel(&self) -> u8 {
+        // Pixel position
+        let nx = self.scroll.scroll_x as u32 + self.cycles as u32; // absolute pixel position
+        let ny = self.scroll.scroll_y as u32 + self.scanline as u32;
+        let fx = (nx & 7) as u8; // pixel inside the tile
+        let fy = (ny & 7) as u8;
+        let tile_col = (nx / 8) as u16; // tile index (0, 1, 2, ...)
+        let tile_row = (ny / 8) as u16;
+
+        // nametable + tile id
+        let nt_addr = self.resolve_tile_addr(tile_col, tile_row);
+        let vram_idx = self.mirror_vram_addr(nt_addr);
+        let tile_id = self.vram[vram_idx as usize];
+
+        // attribute byte
+        let nt_base = nt_addr & !0x3FF; // Remove last 10 bits
+        let local_col = tile_col % 32;
+        let local_row = tile_row % 30;
+        let attr_tile_col = local_col / 4;
+        let attr_tile_row = local_row / 4;
+        let attr_offset = attr_tile_row * 8 + attr_tile_col;
+        let attr_addr = nt_base + 0x3C0 + attr_offset;
+        let attr_vram = self.mirror_vram_addr(attr_addr);
+        let attr = self.vram[attr_vram as usize];
+
+        // decode palette index from attribute byte
+        let palette_idx = match ((local_col % 4) / 2, (local_row % 4) / 2) {
+            (0, 0) => attr & 0b11,
+            (1, 0) => (attr >> 2) & 0b11,
+            (0, 1) => (attr >> 4) & 0b11,
+            (1, 1) => (attr >> 6) & 0b11,
+            (_, _) => unreachable!(),
+        };
+
+        // decode chr bitplane
+        let bank = self.ctrl.background_pattern_addr();
+        let chr_addr = (bank + tile_id as u16 * 16 + fy as u16) as usize;
+        let p0 = self.chr_rom[chr_addr];
+        let p1 = self.chr_rom[chr_addr + 8];
+        let pixel = ((p1 >> (7 - fx)) & 1) << 1 | ((p0 >> (7 - fx)) & 1);
+
+        // palette lookup
+        let start = 1 + (palette_idx as usize) * 4;
+        match pixel {
+            0 => self.palette_table[0],
+            1 => self.palette_table[start],
+            2 => self.palette_table[start + 1],
+            3 => self.palette_table[start + 2],
+            _ => unreachable!(),
+        }
+    }
+
+    fn resolve_tile_addr(&self, tile_col: u16, tile_row: u16) -> u16 {
+        let base = self.ctrl.nametable_addr();
+
+        match self.mirroring {
+            Mirroring::Horizontal => {
+                let (top_nt, bottom_nt) = if base == 0x2000 || base == 0x2400 {
+                    (0x2000, 0x2800)
+                } else {
+                    (0x2800, 0x2000)
+                };
+
+                let (nt, local_row) = if tile_row >= 30 {
+                    (bottom_nt, tile_row - 30)
+                } else {
+                    (top_nt, tile_row)
+                };
+
+                let local_row = local_row % 30;
+
+                nt + local_row * 32 + (tile_col % 32)
+            }
+
+            Mirroring::Vertical => {
+                let (left_nt, right_nt) = if base == 0x2000 || base == 0x2800 {
+                    (0x2000, 0x2400)
+                } else {
+                    (0x2400, 0x2000)
+                };
+
+                let (nt, local_col) = if tile_col >= 32 {
+                    (right_nt, tile_col - 32)
+                } else {
+                    (left_nt, tile_col)
+                };
+
+                let local_col = local_col % 32;
+
+                nt + (tile_row % 30) * 32 + local_col
+            }
+
+            Mirroring::FourScreen => unimplemented!(),
+        }
+    }
+
+    /// Check if the current pixel is a sprite-zero-hit
+    fn is_sprite_zero_hit(&self, bg: u8) -> bool {
+        // No hit it if sprite or background rendering is disabled
+        if !(self.mask.show_sprites() && self.mask.show_background()) {
+            return false;
+        }
+        // No hit if already hit
+        if self.status.is_sprite_zero_hit() {
+            return false;
+        }
+        // No hit if background is transparent
+        if bg == 0 {
+            return false;
+        };
+
+        // Extract sprite zero information
+        let (s0_y, s0_tile, s0_attr, s0_x) = (
+            self.oam_data[0],
+            self.oam_data[1],
+            self.oam_data[2],
+            self.oam_data[3],
+        );
+
+        // Check if current pixel is inside 8x8 sprite
+        let dy = self.scanline.wrapping_sub(s0_y as u16);
+        let dx = self.cycles.wrapping_sub(s0_x as u16);
+        if dy >= 8 || dx >= 8 {
+            return false;
+        }
+
+        let mut fy = dy as u8;
+        let mut fx = dx as u8;
+        if s0_attr & 0x80 != 0 {
+            // flip vertical
+            fy = 7 - fy;
+        }
+        if s0_attr & 0x40 != 0 {
+            // flip horizontal
+            fx = 7 - fx;
+        }
+
+        let bank = self.ctrl.sprite_pattern_addr();
+        let addr = (bank + s0_tile as u16 * 16 + fy as u16) as usize;
+        let p0 = self.chr_rom[addr];
+        let p1 = self.chr_rom[addr + 8];
+
+        let pixel = ((p1 >> (7 - fx)) & 1) << 1 | ((p0 >> (7 - fx)) & 1);
+        pixel != 0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::frame::Frame;
+    use crate::render::palette;
 
     #[test]
     fn test_ppu_addr_assembles_16bit_via_two_writes() {
@@ -560,5 +784,209 @@ mod tests {
         assert_eq!(ppu.read_oam_data(), 0x77);
         ppu.write_to_oam_addr(0x0F); // last byte (offset 0x10 + 255) wrapped to 0x0F
         assert_eq!(ppu.read_oam_data(), 0x88);
+    }
+
+    // ----- Phase 1: pixel rendering in tick() -----
+
+    #[test]
+    fn test_tick_renders_first_pixel() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        // Tile 0, row 0: pixel value 3 (both bitplanes set bit 7)
+        ppu.chr_rom[0] = 0b1000_0000; // plane0 (low bit)
+        ppu.chr_rom[8] = 0b1000_0000; // plane1 (high bit)
+        ppu.tick(1);
+        let c = palette::SYSTEM_PALLETE[0x30];
+        assert_eq!(ppu.frame.data[..3], [c.0, c.1, c.2]);
+    }
+
+    #[test]
+    fn test_tick_renders_entire_first_scanline() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        // All-FF tile → all pixels = value 3
+        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
+        for _ in 0..256 {
+            ppu.tick(1);
+        }
+        let c = palette::SYSTEM_PALLETE[0x30];
+        for x in 0..256 {
+            let base = x * 3;
+            assert_eq!(
+                ppu.frame.data[base..base + 3],
+                [c.0, c.1, c.2],
+                "pixel ({}, 0) should be set",
+                x
+            );
+        }
+    }
+
+    #[test]
+    fn test_tick_does_not_render_during_hblank() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
+        // Tick past visible area (256) into hblank (256..340)
+        for _ in 0..300 {
+            ppu.tick(1);
+        }
+        // Pixel (256,0) should not be written (clamped to 255 max)
+        // The test just verifies tick doesn't panic; pixel count is verified
+        // by checking that only 256 pixels are non-zero in row 0
+        let mut set_count = 0;
+        for x in 0..341 {
+            let base = x * 3;
+            if ppu.frame.data[base..base + 3] != [0, 0, 0] {
+                set_count += 1;
+            }
+        }
+        assert_eq!(set_count, 256);
+    }
+
+    #[test]
+    fn test_tick_does_not_render_during_vblank() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
+        // Advance to scanline 241 (vblank starts)
+        advance_scanlines(&mut ppu, 241);
+        // Snapshot frame before vblank ticks
+        let before = ppu.frame.data.clone();
+        // Tick during vblank — no pixels should be written
+        for _ in 0..256 {
+            ppu.tick(1);
+        }
+        // Frame data must be identical (no pixel written during vblank)
+        assert_eq!(ppu.frame.data, before);
+    }
+
+    #[test]
+    fn test_tick_renders_second_scanline_at_correct_y() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
+        // Complete first scanline, then render one pixel of second
+        ppu.tick(341); // scanline 0 done
+        ppu.tick(1); // first pixel of scanline 1
+        let c = palette::SYSTEM_PALLETE[0x30];
+        let base = 1 * Frame::WIDTH * 3; // row 1, pixel 0
+        assert_eq!(
+            ppu.frame.data[base..base + 3],
+            [c.0, c.1, c.2],
+            "pixel (0, 1) should be set on second scanline"
+        );
+    }
+
+    #[test]
+    fn test_frame_complete_has_rendered_data() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
+        for _ in 0..262 {
+            ppu.tick(341);
+        }
+        // Check a few pixels across the frame
+        let c = palette::SYSTEM_PALLETE[0x30];
+        assert_eq!(ppu.frame.data[..3], [c.0, c.1, c.2]);
+        let mid = 100 * Frame::WIDTH * 3;
+        assert_eq!(ppu.frame.data[mid..mid + 3], [c.0, c.1, c.2]);
+    }
+
+    // ----- Phase 1: fetch_bg_pixel() -----
+
+    #[test]
+    fn test_fetch_bg_pixel_returns_correct_value() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        // Tile 0, pixel (0,0): CHR pixel value 3
+        ppu.chr_rom[0] = 0b1000_0000; // plane0 bit7 = 1
+        ppu.chr_rom[8] = 0b1000_0000; // plane1 bit7 = 1
+        let pixel = ppu.fetch_bg_pixel();
+        assert_eq!(pixel, 0x30);
+    }
+
+    #[test]
+    fn test_fetch_bg_pixel_uses_correct_nametable_tile() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        // Place tile ID 1 at VRAM position 0
+        ppu.vram[0] = 1;
+        // Tile 1: pixel value 3 at (0,0)
+        ppu.chr_rom[16] = 0b1000_0000;
+        ppu.chr_rom[24] = 0b1000_0000;
+        let pixel = ppu.fetch_bg_pixel();
+        assert_eq!(pixel, 0x30);
+    }
+
+    // ----- Phase 1: fetch_sprite_pixel() -----
+
+    #[test]
+    fn test_fetch_sprite_pixel_returns_none_when_no_sprite() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        // All sprites off-screen (Y=255)
+        ppu.oam_data = [0xFF; 256];
+        let pixel = ppu.fetch_sprite_pixel();
+        assert_eq!(pixel, None);
+    }
+
+    #[test]
+    fn test_fetch_sprite_pixel_returns_color_for_visible_sprite() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[0x13] = 0x30; // sprite palette 0, color 3
+        // Sprite 0 at (scanline=0, X=0), tile 0, palette 0
+        ppu.oam_data[0] = 0; // Y
+        ppu.oam_data[1] = 0; // tile index
+        ppu.oam_data[2] = 0; // attributes (palette 0)
+        ppu.oam_data[3] = 0; // X
+        // Tile 0, row 0: pixel value 3
+        ppu.chr_rom[0] = 0b1000_0000; // plane0 bit7=1
+        ppu.chr_rom[8] = 0b1000_0000; // plane1 bit7=1
+        let pixel = ppu.fetch_sprite_pixel();
+        assert_eq!(pixel, Some(0x30));
+    }
+
+    // ----- Phase 1: render_pixel() (BG/sprite compositing) -----
+
+    #[test]
+    fn test_render_pixel_sprite_over_bg() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[0x03] = 0x2D; // BG palette 0, color 3
+        ppu.palette_table[0x13] = 0x15; // sprite palette 0, color 3
+        // BG tile 0: pixel value 3
+        ppu.chr_rom[0] = 0b1000_0000;
+        ppu.chr_rom[8] = 0b1000_0000;
+        // Sprite 0 at (0,0), tile 1, pixel value 3
+        ppu.oam_data[0] = 0;
+        ppu.oam_data[1] = 1;
+        ppu.oam_data[2] = 0;
+        ppu.oam_data[3] = 0;
+        ppu.chr_rom[16] = 0b1000_0000;
+        ppu.chr_rom[24] = 0b1000_0000;
+        let pixel = ppu.render_pixel();
+        // Sprite pixel (0x15) should win over BG pixel (0x2D)
+        assert_eq!(pixel, 0x15);
+    }
+
+    #[test]
+    fn test_render_pixel_transparent_sprite_shows_bg() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        ppu.palette_table[0x03] = 0x2D; // BG palette 0, color 3
+        // BG tile 0: pixel value 3
+        ppu.chr_rom[0] = 0b1000_0000;
+        ppu.chr_rom[8] = 0b1000_0000;
+        // No visible sprite (all off-screen)
+        ppu.oam_data = [0xFF; 256];
+        let pixel = ppu.render_pixel();
+        // BG shows through
+        assert_eq!(pixel, 0x2D);
+    }
+
+    #[test]
+    fn test_render_pixel_transparent_everything() {
+        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        // Everything default: BG pixel=0, no visible sprite
+        ppu.oam_data = [0xFF; 256];
+        let pixel = ppu.render_pixel();
+        assert_eq!(pixel, 0); // universal background
     }
 }
