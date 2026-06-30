@@ -139,7 +139,6 @@ fn main() {
     let mut fps = 0.0;
     let mut frame_count = 0u64;
     let mut fps_timer = Instant::now();
-    let mut poll_counter = 0u64;
     cpu.run_with_callback(|cpu| {
         if cpu.bus.frame_ready {
             handle_input(cpu, &mut event_pump);
