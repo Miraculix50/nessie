@@ -9,8 +9,8 @@ It's not finished yet (missing APU, mappers etc.), but it's able to run simple g
 ## Setup
 
 1. Install cargo & SDL2
-2. Update `main.rs` to load your own rom
-3. Use `cargo run --release` for an optimized build
+2. Get the file path to your rom
+3. Use `ROM_PATH=path_to_your_rom cargo run --release` for an optimized build
 
 > **Important:** Only tested on macOS 26
 
