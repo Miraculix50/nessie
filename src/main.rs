@@ -8,6 +8,8 @@ pub mod render;
 pub mod tile_viewer;
 pub mod trace;
 
+use std::time::Instant;
+
 use sdl2::EventPump;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -134,9 +136,22 @@ fn main() {
     let mut cpu = CPU::new(bus);
     cpu.reset();
 
+    let mut fps = 0.0;
+    let mut frame_count = 0u64;
+    let mut fps_timer = Instant::now();
+    let mut poll_counter = 0u64;
     cpu.run_with_callback(|cpu| {
         if cpu.bus.frame_ready {
+            handle_input(cpu, &mut event_pump);
             cpu.bus.frame_ready = false;
+
+            frame_count += 1;
+            let elapsed = fps_timer.elapsed();
+            if elapsed.as_secs_f64() >= 1.0 {
+                fps = frame_count as f64 / elapsed.as_secs_f64();
+                frame_count = 0;
+                fps_timer = Instant::now();
+            }
 
             texture
                 .update(None, &cpu.bus.ppu.frame.data, WIDTH as usize * 3)
@@ -144,7 +159,5 @@ fn main() {
             canvas.copy(&texture, None, None).unwrap();
             canvas.present();
         }
-
-        handle_input(cpu, &mut event_pump);
     });
 }
