@@ -201,13 +201,6 @@ impl PPU {
                     .set_pixel(self.cycles as usize, self.scanline as usize, rgb);
             }
 
-            // Sprite zero hit check
-            if self.cycles == self.oam_data[3] as u16
-                && self.scanline == self.oam_data[0] as u16
-                && self.mask.show_sprites()
-                && self.mask.show_background()
-            {}
-
             self.cycles += 1;
             if self.cycles == 341 {
                 self.cycles = 0;
