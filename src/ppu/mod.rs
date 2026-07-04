@@ -437,7 +437,7 @@ impl PPU {
         let bank = self.ctrl.sprite_pattern_addr();
         let addr = bank + s0_tile as u16 * 16 + fy as u16;
         let p0 = self.chr_mapper.borrow().read_chr(addr);
-        let p1 = self.chr_mapper.borrow().read_chr(addr);
+        let p1 = self.chr_mapper.borrow().read_chr(addr + 8);
 
         let pixel = ((p1 >> (7 - fx)) & 1) << 1 | ((p0 >> (7 - fx)) & 1);
         pixel != 0
@@ -529,19 +529,6 @@ mod tests {
         ppu.oam_data[2] = 0;
         ppu.oam_data[3] = 0;
         let _pixel = ppu.fetch_sprite_pixel();
-    }
-
-    #[test]
-    fn test_ppu_sprite_zero_hit_chr_through_mapper() {
-        let mut chr = vec![0u8; 0x2000];
-        chr[0] = 0b1000_0000;
-        chr[8] = 0b1000_0000;
-        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
-        ppu.oam_data[0] = 0;
-        ppu.oam_data[1] = 0;
-        ppu.oam_data[2] = 0;
-        ppu.oam_data[3] = 0;
-        let _hit = ppu.is_sprite_zero_hit(3);
     }
 
     #[test]
@@ -1105,5 +1092,121 @@ mod tests {
         ppu.oam_data = [0xFF; 256];
         let pixel = ppu.render_pixel();
         assert_eq!(pixel, 0); // universal background
+    }
+
+    // ----- Sprite Zero Hit -----
+
+    #[test]
+    fn test_sprite_zero_hit_exact_coordinates() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.mask.update(0b0001_1000);
+        ppu.scanline = 20;
+        ppu.cycles = 10;
+        ppu.oam_data[0] = 20; // Y
+        ppu.oam_data[1] = 0;  // tile
+        ppu.oam_data[2] = 0;  // attr
+        ppu.oam_data[3] = 10; // X
+        assert!(ppu.is_sprite_zero_hit(1));
+    }
+
+    #[test]
+    fn test_sprite_zero_hit_requires_both_visible() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.scanline = 20;
+        ppu.cycles = 10;
+        ppu.oam_data[0] = 20;
+        ppu.oam_data[1] = 0;
+        ppu.oam_data[2] = 0;
+        ppu.oam_data[3] = 10;
+        // mask defaults to 0 = rendering disabled
+        assert!(!ppu.is_sprite_zero_hit(1));
+    }
+
+    #[test]
+    fn test_sprite_zero_hit_already_hit() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.mask.update(0b0001_1000);
+        ppu.scanline = 20;
+        ppu.cycles = 10;
+        ppu.oam_data[0] = 20;
+        ppu.oam_data[1] = 0;
+        ppu.oam_data[2] = 0;
+        ppu.oam_data[3] = 10;
+        ppu.status.set_sprite_zero_hit(true);
+        assert!(!ppu.is_sprite_zero_hit(1));
+    }
+
+    #[test]
+    fn test_sprite_zero_hit_bg_transparent() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.mask.update(0b0001_1000);
+        ppu.scanline = 20;
+        ppu.cycles = 10;
+        ppu.oam_data[0] = 20;
+        ppu.oam_data[1] = 0;
+        ppu.oam_data[2] = 0;
+        ppu.oam_data[3] = 10;
+        assert!(!ppu.is_sprite_zero_hit(0));
+    }
+
+    #[test]
+    fn test_sprite_zero_hit_outside_sprite_area() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.mask.update(0b0001_1000);
+        ppu.scanline = 50;
+        ppu.cycles = 50;
+        ppu.oam_data[0] = 20;
+        ppu.oam_data[1] = 0;
+        ppu.oam_data[2] = 0;
+        ppu.oam_data[3] = 10;
+        // dy=30 >= 8, dx=40 >= 8
+        assert!(!ppu.is_sprite_zero_hit(1));
+    }
+
+    #[test]
+    fn test_sprite_zero_hit_sprite_pixel_transparent() {
+        let chr = vec![0u8; 0x2000]; // all transparent
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.mask.update(0b0001_1000);
+        ppu.scanline = 20;
+        ppu.cycles = 10;
+        ppu.oam_data[0] = 20;
+        ppu.oam_data[1] = 0;
+        ppu.oam_data[2] = 0;
+        ppu.oam_data[3] = 10;
+        assert!(!ppu.is_sprite_zero_hit(1));
+    }
+
+    #[test]
+    fn test_sprite_zero_hit_via_render_pixel_sets_status_flag() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.mask.update(0b0001_1000);
+        ppu.palette_table[3] = 0x2D; // BG palette 0, color 3 (non-zero)
+        ppu.scanline = 0;
+        ppu.cycles = 0;
+        ppu.oam_data[0] = 0;  // Y
+        ppu.oam_data[1] = 0;  // tile 0
+        ppu.oam_data[2] = 0;  // attr
+        ppu.oam_data[3] = 0;  // X
+        let _pixel = ppu.render_pixel();
+        assert!(ppu.status.is_sprite_zero_hit());
     }
 }
