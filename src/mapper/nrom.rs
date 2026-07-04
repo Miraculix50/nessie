@@ -1,7 +1,6 @@
 use crate::cartridge::Mirroring;
 use crate::cartridge::Rom;
 use crate::mapper::Mapper;
-use crate::ppu::registers::addr;
 
 pub struct Nrom {
     prg_rom: Vec<u8>,

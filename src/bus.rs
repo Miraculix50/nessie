@@ -4,7 +4,6 @@ use std::rc::Rc;
 use crate::cpu::Mem;
 use crate::joypad::Joypad;
 use crate::mapper::Mapper;
-use crate::mapper::create_mapper;
 use crate::ppu::PPU;
 
 const RAM: u16 = 0x0000;
@@ -153,6 +152,7 @@ impl Mem for Bus {
 mod tests {
     use super::*;
     use crate::cartridge::test::test_rom;
+    use crate::mapper::create_mapper;
 
     #[test]
     fn test_bus_write_2000_sets_ctrl() {
