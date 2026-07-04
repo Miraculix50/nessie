@@ -28,6 +28,8 @@ pub struct PPU {
     pub palette_table: [u8; 32],
 
     internal_data_buf: u8,
+    pub(crate) pending_scroll_x: Option<u8>,
+    pub(crate) pending_scroll_y: Option<u8>,
 
     pub(crate) scanline: u16,
     pub(crate) cycles: u16,
@@ -52,6 +54,8 @@ impl PPU {
             palette_table: [0; 32],
 
             internal_data_buf: 0,
+            pending_scroll_x: None,
+            pending_scroll_y: None,
 
             scanline: 0,
             cycles: 0,
@@ -86,7 +90,17 @@ impl PPU {
     }
 
     pub fn write_to_scroll(&mut self, value: u8) {
-        self.scroll.write(value);
+        if self.scanline < 240 && self.cycles < 256 {
+            if self.scroll.x_ptr {
+                self.pending_scroll_x = Some(value)
+            } else {
+                self.pending_scroll_y = Some(value)
+            }
+
+            self.scroll.x_ptr = !self.scroll.x_ptr
+        } else {
+            self.scroll.write(value);
+        }
     }
 
     pub fn write_to_oam_addr(&mut self, value: u8) {
@@ -197,6 +211,15 @@ impl PPU {
     /// Tick the PPU (cycle-accurate) the given amount of cycles, rendering one pixel at a time
     pub fn tick(&mut self, ppu_cycles: u16) -> bool {
         for _ in 0..ppu_cycles {
+            if self.cycles == 0 {
+                if let Some(x) = self.pending_scroll_x.take() {
+                    self.scroll.set_scroll_x(x);
+                }
+                if let Some(y) = self.pending_scroll_y.take() {
+                    self.scroll.set_scroll_y(y);
+                }
+            }
+
             if self.scanline < 240 && self.cycles < 256 {
                 let pixel = self.render_pixel();
                 let rgb = palette::SYSTEM_PALLETE[pixel as usize];
@@ -1106,8 +1129,8 @@ mod tests {
         ppu.scanline = 20;
         ppu.cycles = 10;
         ppu.oam_data[0] = 20; // Y
-        ppu.oam_data[1] = 0;  // tile
-        ppu.oam_data[2] = 0;  // attr
+        ppu.oam_data[1] = 0; // tile
+        ppu.oam_data[2] = 0; // attr
         ppu.oam_data[3] = 10; // X
         assert!(ppu.is_sprite_zero_hit(1));
     }
@@ -1202,11 +1225,77 @@ mod tests {
         ppu.palette_table[3] = 0x2D; // BG palette 0, color 3 (non-zero)
         ppu.scanline = 0;
         ppu.cycles = 0;
-        ppu.oam_data[0] = 0;  // Y
-        ppu.oam_data[1] = 0;  // tile 0
-        ppu.oam_data[2] = 0;  // attr
-        ppu.oam_data[3] = 0;  // X
+        ppu.oam_data[0] = 0; // Y
+        ppu.oam_data[1] = 0; // tile 0
+        ppu.oam_data[2] = 0; // attr
+        ppu.oam_data[3] = 0; // X
         let _pixel = ppu.render_pixel();
         assert!(ppu.status.is_sprite_zero_hit());
+    }
+
+    // ----- Phase 2: Mid-Frame Scroll -----
+
+    #[test]
+    fn test_mid_frame_scroll_write_during_visible_is_pending() {
+        let mut ppu = test_ppu(Mirroring::Horizontal);
+        ppu.scanline = 100;
+        ppu.cycles = 10;
+        ppu.write_to_scroll(42);
+        assert_eq!(ppu.pending_scroll_x, Some(42));
+        assert!(ppu.pending_scroll_y.is_none());
+        assert_eq!(ppu.scroll.scroll_x, 0);
+        assert_eq!(ppu.scroll.scroll_y, 0);
+    }
+
+    #[test]
+    fn test_mid_frame_scroll_write_during_vblank_is_immediate() {
+        let mut ppu = test_ppu(Mirroring::Horizontal);
+        ppu.scanline = 250;
+        ppu.write_to_scroll(42);
+        assert!(ppu.pending_scroll_x.is_none());
+        assert!(ppu.pending_scroll_y.is_none());
+        assert_eq!(ppu.scroll.scroll_x, 42);
+    }
+
+    #[test]
+    fn test_pending_scroll_applied_on_next_scanline() {
+        let mut ppu = test_ppu(Mirroring::Horizontal);
+        ppu.scanline = 100;
+        ppu.cycles = 100;
+        ppu.write_to_scroll(77);
+        assert_eq!(ppu.pending_scroll_x, Some(77));
+        assert!(ppu.pending_scroll_y.is_none());
+        // Advance to end of current scanline (341 - 100 = 241 more cycles)
+        ppu.tick(241);
+        assert_eq!(ppu.scanline, 101);
+        assert_eq!(ppu.cycles, 0);
+        ppu.tick(1);
+        // pending scroll applied when cycles wrapped to 0
+        assert_eq!(ppu.scroll.scroll_x, 77);
+        assert!(ppu.pending_scroll_x.is_none());
+        assert!(ppu.pending_scroll_y.is_none());
+    }
+
+    #[test]
+    fn test_mid_frame_double_write_both_pending() {
+        let mut ppu = test_ppu(Mirroring::Horizontal);
+        ppu.scanline = 30;
+        ppu.cycles = 100;
+        // SMB1: mid-frame double write (scroll_x then scroll_y=0)
+        ppu.write_to_scroll(42); // scroll_x write
+        assert_eq!(ppu.pending_scroll_x, Some(42));
+        assert!(ppu.pending_scroll_y.is_none());
+        ppu.write_to_scroll(0); // scroll_y write
+        assert_eq!(ppu.pending_scroll_x, Some(42));
+        assert_eq!(ppu.pending_scroll_y, Some(0));
+        // Advance to next scanline — both should be applied
+        ppu.tick(241);
+        assert_eq!(ppu.scanline, 31);
+        assert_eq!(ppu.cycles, 0);
+        ppu.tick(1);
+        assert_eq!(ppu.scroll.scroll_x, 42);
+        assert_eq!(ppu.scroll.scroll_y, 0);
+        assert!(ppu.pending_scroll_x.is_none());
+        assert!(ppu.pending_scroll_y.is_none());
     }
 }

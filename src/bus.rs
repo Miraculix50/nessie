@@ -190,6 +190,7 @@ mod tests {
     #[test]
     fn test_bus_read_2002_resets_scroll_latch() {
         let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
+        bus.ppu.scanline = 250; // VBLANK so scroll is applied instantly
         bus.mem_write(0x2005, 0x42);
         bus.mem_read(0x2002);
         bus.mem_write(0x2005, 0x99);
@@ -199,6 +200,7 @@ mod tests {
     #[test]
     fn test_bus_write_2005_sets_scroll_x() {
         let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
+        bus.ppu.scanline = 250; // VBLANK so scroll is applied instantly
         bus.mem_write(0x2005, 0x42);
         assert_eq!(bus.ppu.scroll.scroll_x, 0x42);
     }
@@ -206,6 +208,7 @@ mod tests {
     #[test]
     fn test_bus_write_2006_sets_addr() {
         let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
+        bus.ppu.scanline = 250; // VBLANK so scroll is applied instantly
         bus.mem_write(0x2006, 0x23);
         bus.mem_write(0x2006, 0x05);
         assert_eq!(bus.ppu.addr.get(), 0x2305);

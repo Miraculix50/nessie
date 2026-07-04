@@ -1,7 +1,7 @@
 pub struct ScrollRegister {
     pub scroll_x: u8,
     pub scroll_y: u8,
-    x_ptr: bool, // Same as hi_ptr of AddressRegister on real hardware
+    pub x_ptr: bool, // Same as hi_ptr of AddressRegister on real hardware
 }
 
 impl ScrollRegister {
@@ -21,6 +21,14 @@ impl ScrollRegister {
         }
 
         self.x_ptr = !self.x_ptr
+    }
+
+    pub fn set_scroll_x(&mut self, value: u8) {
+        self.scroll_x = value;
+    }
+
+    pub fn set_scroll_y(&mut self, value: u8) {
+        self.scroll_y = value;
     }
 
     pub fn reset_latch(&mut self) {
