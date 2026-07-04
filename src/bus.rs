@@ -1,6 +1,10 @@
-use crate::cartridge::Rom;
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::cpu::Mem;
 use crate::joypad::Joypad;
+use crate::mapper::Mapper;
+use crate::mapper::create_mapper;
 use crate::ppu::PPU;
 
 const RAM: u16 = 0x0000;
@@ -16,7 +20,7 @@ const PRG_ROM_END: u16 = 0xFFFF;
 
 pub struct Bus {
     cpu_vram: [u8; 2048],
-    prg_rom: Vec<u8>,
+    pub mapper: Rc<RefCell<dyn Mapper>>,
     pub ppu: PPU,
     pub joypad1: Joypad,
     pub frame_ready: bool,
@@ -24,35 +28,31 @@ pub struct Bus {
 }
 
 impl Bus {
-    pub fn new(rom: Rom) -> Self {
-        let ppu = PPU::new(rom.chr_rom, rom.screen_mirroring);
+    pub fn new(mapper: Rc<RefCell<dyn Mapper>>) -> Self {
+        let ppu_mapper = mapper.clone();
+        let ppu = PPU::new(ppu_mapper);
 
         Bus {
             cpu_vram: [0; 2048],
-            prg_rom: rom.prg_rom,
-            ppu: ppu,
+            mapper,
+            ppu,
             joypad1: Joypad::new(),
             frame_ready: false,
             cycles: 0,
         }
     }
 
-    fn read_prg_rom(&self, mut addr: u16) -> u8 {
-        addr -= PRG_ROM;
-        if self.prg_rom.len() == 0x4000 && addr >= 0x4000 {
-            // Mirror ROM if needed
-            addr = addr % 0x4000;
-        }
-        self.prg_rom[addr as usize]
+    fn read_prg_rom(&self, addr: u16) -> u8 {
+        self.mapper.borrow().read_prg(addr)
     }
 
     pub fn set_reset_vector(&mut self, addr: u16) {
-        self.prg_rom[0x7FFC] = (addr & 0xFF) as u8;
-        self.prg_rom[0x7FFD] = (addr >> 8) as u8;
+        self.write_prg_rom(0xFFFC, (addr & 0xFF) as u8);
+        self.write_prg_rom(0xFFFD, (addr >> 8) as u8);
     }
 
     pub fn write_prg_rom(&mut self, addr: u16, data: u8) {
-        self.prg_rom[(addr - 0x8000) as usize] = data;
+        self.mapper.borrow_mut().write_prg(addr, data);
     }
 
     pub fn tick(&mut self, cycles: u16) {
@@ -141,10 +141,7 @@ impl Mem for Bus {
             JOYPAD2 => {
                 // ignore JOYPAD2
             }
-            PRG_ROM..=PRG_ROM_END => {
-                // panic!("Attempt to write to cartridge ROM space!")
-                println!("Attempt to write to cartridge ROM space!")
-            }
+            PRG_ROM..=PRG_ROM_END => self.mapper.borrow_mut().write_prg(addr, data),
             _ => {
                 // println!("Ignoring mem access at 0x{:04x}", addr);
             }
@@ -159,21 +156,21 @@ mod tests {
 
     #[test]
     fn test_bus_write_2000_sets_ctrl() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.mem_write(0x2000, 0b10000000);
         assert_eq!(bus.ppu.ctrl.bits(), 0b10000000);
     }
 
     #[test]
     fn test_bus_write_2001_sets_mask() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.mem_write(0x2001, 0b00010000);
         assert!(bus.ppu.mask.show_sprites());
     }
 
     #[test]
     fn test_bus_read_2002_returns_status_and_clears_vblank() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.ppu.status.set_vblank_status(true);
         let status = bus.mem_read(0x2002);
         assert!(status & 0b10000000 != 0);
@@ -182,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_bus_read_2002_resets_addr_latch() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.mem_write(0x2006, 0x23);
         bus.mem_read(0x2002);
         bus.mem_write(0x2006, 0x42);
@@ -192,7 +189,7 @@ mod tests {
 
     #[test]
     fn test_bus_read_2002_resets_scroll_latch() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.mem_write(0x2005, 0x42);
         bus.mem_read(0x2002);
         bus.mem_write(0x2005, 0x99);
@@ -201,14 +198,14 @@ mod tests {
 
     #[test]
     fn test_bus_write_2005_sets_scroll_x() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.mem_write(0x2005, 0x42);
         assert_eq!(bus.ppu.scroll.scroll_x, 0x42);
     }
 
     #[test]
     fn test_bus_write_2006_sets_addr() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.mem_write(0x2006, 0x23);
         bus.mem_write(0x2006, 0x05);
         assert_eq!(bus.ppu.addr.get(), 0x2305);
@@ -216,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_bus_write_2007_writes_vram() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.mem_write(0x2006, 0x20);
         bus.mem_write(0x2006, 0x00);
         bus.mem_write(0x2007, 0x66);
@@ -225,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_bus_write_ppu_mirror_routes_to_ctrl() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.mem_write(0x2008, 0b10000000);
         assert_eq!(bus.ppu.ctrl.bits(), 0b10000000);
     }
@@ -234,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_bus_tick_accumulates_cycles() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.tick(5);
         bus.tick(3);
         assert_eq!(bus.cycles, 8);
@@ -242,14 +239,14 @@ mod tests {
 
     #[test]
     fn test_bus_tick_propagates_to_ppu() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.tick(1);
         assert_eq!(bus.ppu.cycles, 3);
     }
 
     #[test]
     fn test_bus_poll_nmi_status_returns_true_when_pending() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         bus.ppu.ctrl.update(0b10000000);
         for _ in 0..241 {
             bus.ppu.tick(341);
@@ -259,7 +256,55 @@ mod tests {
 
     #[test]
     fn test_bus_poll_nmi_status_returns_false_when_no_nmi() {
-        let mut bus = Bus::new(test_rom(vec![0; 32]));
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
         assert!(!bus.poll_nmi_status());
+    }
+
+    // ----- Phase 1: Mapper routing through Bus -----
+
+    #[test]
+    fn test_bus_reads_prg_rom_through_mapper() {
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0x42; 32])));
+        assert_eq!(bus.mem_read(0x8000), 0x42);
+    }
+
+    #[test]
+    fn test_bus_writes_prg_rom_through_mapper() {
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0x42; 32])));
+        bus.mem_write(0x8000, 0xFF);
+        // NROM write_prg writes through (needed for CPU::load / set_reset_vector)
+        assert_eq!(bus.mem_read(0x8000), 0xFF);
+    }
+
+    #[test]
+    fn test_bus_reads_prg_rom_offset_through_mapper() {
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0x42; 32])));
+        // 0xC000 → prg[0x4000] = 0 (only first 32 bytes are 0x42)
+        assert_eq!(bus.mem_read(0xC000), 0x00);
+    }
+
+    #[test]
+    fn test_bus_nrom_read_chr_rom_through_ppu() {
+        let mut bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
+        bus.mem_write(0x2006, 0x00);
+        bus.mem_write(0x2006, 0x00);
+        let _dummy = bus.mem_read(0x2007);
+        assert_eq!(bus.mem_read(0x2007), 0x02);
+    }
+
+    #[test]
+    fn test_bus_has_mapper_field() {
+        let bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
+        let _mapper = &bus.mapper;
+    }
+
+    #[test]
+    fn test_bus_mapper_type_is_rc_refcell() {
+        use crate::mapper::Mapper;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let bus = Bus::new(create_mapper(test_rom(vec![0; 32])));
+        let _typed: &Rc<RefCell<dyn Mapper>> = &bus.mapper;
     }
 }

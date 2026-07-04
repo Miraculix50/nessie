@@ -2,6 +2,8 @@ pub mod bus;
 pub mod cartridge;
 pub mod cpu;
 pub mod joypad;
+pub mod mapper;
+
 pub mod opcodes;
 pub mod ppu;
 pub mod render;
@@ -19,6 +21,7 @@ use crate::bus::Bus;
 use crate::cartridge::Rom;
 use crate::cpu::CPU;
 use crate::joypad::JoypadButton;
+use crate::mapper::create_mapper;
 
 const SCALE: f64 = 2.0;
 const WIDTH: u32 = 256;
@@ -132,7 +135,8 @@ fn main() {
     let rom_path = std::env::var("ROM_PATH").unwrap();
     let bytes = std::fs::read(rom_path).unwrap();
     let rom = Rom::new(&bytes).unwrap();
-    let bus = Bus::new(rom);
+    let mapper = create_mapper(rom);
+    let bus = Bus::new(mapper);
     let mut cpu = CPU::new(bus);
     cpu.reset();
 

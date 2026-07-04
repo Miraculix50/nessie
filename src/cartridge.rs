@@ -2,7 +2,7 @@ const NES_TAG: [u8; 4] = [0x4e, 0x45, 0x53, 0x1a];
 const PRG_ROM_PAGE_SIZE: usize = 16384;
 const CHR_ROM_PAGE_SIZE: usize = 8192;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Mirroring {
     Vertical,
     Horizontal,
@@ -89,7 +89,7 @@ pub mod test {
 
         let test_rom = create_rom(TestRom {
             header: vec![
-                0x4e, 0x45, 0x53, 0x1a, 0x02, 0x01, 0x31, 00, 00, 00, 00, 00, 00, 00, 00, 00,
+                0x4e, 0x45, 0x53, 0x1a, 0x02, 0x01, 0x00, 00, 00, 00, 00, 00, 00, 00, 00, 00,
             ],
             trainer: None,
             prg_rom: prg_rom_contents,

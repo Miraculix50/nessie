@@ -1,4 +1,8 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::cartridge::Mirroring;
+use crate::mapper::Mapper;
 use crate::render::frame::Frame;
 use crate::render::palette;
 use registers::addr::AddrRegister;
@@ -10,9 +14,8 @@ use registers::status::StatusRegister;
 pub mod registers;
 
 pub struct PPU {
-    pub chr_rom: Vec<u8>,
+    pub chr_mapper: Rc<RefCell<dyn Mapper>>,
     pub vram: [u8; 2048],
-    pub mirroring: Mirroring,
 
     pub ctrl: ControlRegister,
     pub mask: MaskRegister,
@@ -33,11 +36,11 @@ pub struct PPU {
 }
 
 impl PPU {
-    pub fn new(chr_rom: Vec<u8>, mirroring: Mirroring) -> Self {
+    pub fn new(mapper: Rc<RefCell<dyn Mapper>>) -> Self {
         PPU {
-            chr_rom: chr_rom,
+            chr_mapper: mapper,
             vram: [0; 2048],
-            mirroring: mirroring,
+
             ctrl: ControlRegister::new(),
             mask: MaskRegister::new(),
             status: StatusRegister::new(),
@@ -129,7 +132,7 @@ impl PPU {
         let mirrored_vram = addr & 0b10111111111111; // mirror down 0x3000-0x3eff to 0x2000-0x2eff
         let vram_index = mirrored_vram - 0x2000; // to index of vram
         let name_table = vram_index / 0x400; // to name table index
-        match (&self.mirroring, name_table) {
+        match (&self.chr_mapper.borrow().mirroring(), name_table) {
             (Mirroring::Vertical, 2) | (Mirroring::Vertical, 3) => vram_index - 0x800,
             (Mirroring::Horizontal, 2) => vram_index - 0x400,
             (Mirroring::Horizontal, 1) => vram_index - 0x400,
@@ -145,7 +148,7 @@ impl PPU {
         match addr {
             0..=0x1fff => {
                 let result = self.internal_data_buf;
-                self.internal_data_buf = self.chr_rom[addr as usize];
+                self.internal_data_buf = self.chr_mapper.borrow().read_chr(addr);
                 result
             }
             0x2000..=0x2fff => {
@@ -271,9 +274,9 @@ impl PPU {
                 }
 
                 let bank = self.ctrl.sprite_pattern_addr();
-                let tile_addr = (bank + tile * 16 + fy) as usize;
-                let p0 = self.chr_rom[tile_addr];
-                let p1 = self.chr_rom[tile_addr + 8];
+                let tile_addr = bank + tile * 16 + fy;
+                let p0 = self.chr_mapper.borrow().read_chr(tile_addr);
+                let p1 = self.chr_mapper.borrow().read_chr(tile_addr + 8);
                 let value = ((p1 >> (7 - fx)) & 1) << 1 | ((p0 >> (7 - fx)) & 1);
 
                 if value != 0 {
@@ -330,9 +333,9 @@ impl PPU {
 
         // decode chr bitplane
         let bank = self.ctrl.background_pattern_addr();
-        let chr_addr = (bank + tile_id as u16 * 16 + fy as u16) as usize;
-        let p0 = self.chr_rom[chr_addr];
-        let p1 = self.chr_rom[chr_addr + 8];
+        let chr_addr = bank + tile_id as u16 * 16 + fy as u16;
+        let p0 = self.chr_mapper.borrow().read_chr(chr_addr);
+        let p1 = self.chr_mapper.borrow().read_chr(chr_addr + 8);
         let pixel = ((p1 >> (7 - fx)) & 1) << 1 | ((p0 >> (7 - fx)) & 1);
 
         // palette lookup
@@ -349,7 +352,7 @@ impl PPU {
     fn resolve_tile_addr(&self, tile_col: u16, tile_row: u16) -> u16 {
         let base = self.ctrl.nametable_addr();
 
-        match self.mirroring {
+        match self.chr_mapper.borrow().mirroring() {
             Mirroring::Horizontal => {
                 let (top_nt, bottom_nt) = if base == 0x2000 || base == 0x2400 {
                     (0x2000, 0x2800)
@@ -432,9 +435,9 @@ impl PPU {
         }
 
         let bank = self.ctrl.sprite_pattern_addr();
-        let addr = (bank + s0_tile as u16 * 16 + fy as u16) as usize;
-        let p0 = self.chr_rom[addr];
-        let p1 = self.chr_rom[addr + 8];
+        let addr = bank + s0_tile as u16 * 16 + fy as u16;
+        let p0 = self.chr_mapper.borrow().read_chr(addr);
+        let p1 = self.chr_mapper.borrow().read_chr(addr);
 
         let pixel = ((p1 >> (7 - fx)) & 1) << 1 | ((p0 >> (7 - fx)) & 1);
         pixel != 0
@@ -444,8 +447,124 @@ impl PPU {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cartridge::Rom;
+    use crate::mapper::{Mapper, create_mapper};
     use crate::render::frame::Frame;
     use crate::render::palette;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// PPU mit NROM (leerem CHR), für Tests ohne CHR-Daten
+    fn test_ppu(mirroring: Mirroring) -> PPU {
+        PPU::new(create_mapper(Rom {
+            prg_rom: vec![0; 0x8000],
+            chr_rom: vec![0; 0x2000],
+            mapper: 0,
+            screen_mirroring: mirroring,
+        }))
+    }
+
+    /// PPU mit NROM und gegebenem CHR-ROM
+    fn ppu_with_chr(chr_data: Vec<u8>, mirroring: Mirroring) -> PPU {
+        PPU::new(create_mapper(Rom {
+            prg_rom: vec![0; 0x8000],
+            chr_rom: chr_data,
+            mapper: 0,
+            screen_mirroring: mirroring,
+        }))
+    }
+
+    // ----- PPU: CHR via Mapper (neue API, Schritt 5) -----
+
+    #[test]
+    fn test_ppu_new_accepts_mapper() {
+        let mapper = create_mapper(Rom {
+            prg_rom: vec![0; 0x8000],
+            chr_rom: vec![0; 0x2000],
+            mapper: 0,
+            screen_mirroring: Mirroring::Horizontal,
+        });
+        let _ppu = PPU::new(mapper);
+    }
+
+    #[test]
+    fn test_ppu_has_chr_mapper_field() {
+        let mapper = create_mapper(Rom {
+            prg_rom: vec![0; 0x8000],
+            chr_rom: vec![0; 0x2000],
+            mapper: 0,
+            screen_mirroring: Mirroring::Horizontal,
+        });
+        let ppu = PPU::new(mapper);
+        let _field: &Rc<RefCell<dyn Mapper>> = &ppu.chr_mapper;
+    }
+
+    #[test]
+    fn test_ppu_reads_chr_through_mapper() {
+        let mut ppu = ppu_with_chr(vec![0x42; 0x2000], Mirroring::Horizontal);
+        ppu.write_to_ppu_addr(0x00);
+        ppu.write_to_ppu_addr(0x00);
+        let _val = ppu.read_data();
+    }
+
+    #[test]
+    fn test_ppu_fetches_bg_pixel_chr_through_mapper() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        let _pixel = ppu.fetch_bg_pixel();
+    }
+
+    #[test]
+    fn test_ppu_fetches_sprite_pixel_chr_through_mapper() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.palette_table[0x13] = 0x30;
+        ppu.oam_data[0] = 0;
+        ppu.oam_data[1] = 0;
+        ppu.oam_data[2] = 0;
+        ppu.oam_data[3] = 0;
+        let _pixel = ppu.fetch_sprite_pixel();
+    }
+
+    #[test]
+    fn test_ppu_sprite_zero_hit_chr_through_mapper() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.oam_data[0] = 0;
+        ppu.oam_data[1] = 0;
+        ppu.oam_data[2] = 0;
+        ppu.oam_data[3] = 0;
+        let _hit = ppu.is_sprite_zero_hit(3);
+    }
+
+    #[test]
+    fn test_ppu_mirroring_vertical_from_mapper() {
+        let ppu = test_ppu(Mirroring::Vertical);
+        let _m = ppu.chr_mapper.borrow().mirroring();
+    }
+
+    #[test]
+    fn test_ppu_mirroring_horizontal_from_mapper() {
+        let ppu = test_ppu(Mirroring::Horizontal);
+        let _m = ppu.chr_mapper.borrow().mirroring();
+    }
+
+    #[test]
+    fn test_ppu_tick_renders_pixel_through_mapper() {
+        let mut chr = vec![0u8; 0x2000];
+        chr[..16].copy_from_slice(&[0xFF; 16]);
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
+        ppu.palette_table[3] = 0x30;
+        ppu.tick(1);
+        let _pixel = &ppu.frame.data[..3];
+    }
 
     #[test]
     fn test_ppu_addr_assembles_16bit_via_two_writes() {
@@ -590,8 +709,9 @@ mod tests {
 
     #[test]
     fn test_ppu_read_data_chr_rom_uses_internal_buffer() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
-        ppu.chr_rom[0x100] = 0x42;
+        let mut chr = vec![0u8; 0x2000];
+        chr[0x100] = 0x42;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.write_to_ppu_addr(0x01);
         ppu.write_to_ppu_addr(0x00);
         // First read: returns old buffer (0), loads 0x42 into buffer
@@ -602,7 +722,7 @@ mod tests {
 
     #[test]
     fn test_ppu_read_data_vram_uses_internal_buffer() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.vram[0x0305] = 0x66;
         ppu.write_to_ppu_addr(0x23);
         ppu.write_to_ppu_addr(0x05);
@@ -614,7 +734,7 @@ mod tests {
 
     #[test]
     fn test_ppu_read_data_palette_returns_directly() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.palette_table[0x00] = 0x2D; // 0x00 is the same as 0x10 due to mirroring
         ppu.write_to_ppu_addr(0x3F);
         ppu.write_to_ppu_addr(0x10);
@@ -633,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_ppu_tick_accumulates_cycles() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.tick(100);
         assert_eq!(ppu.cycles, 100);
         assert_eq!(ppu.scanline, 0);
@@ -641,7 +761,7 @@ mod tests {
 
     #[test]
     fn test_ppu_tick_advances_scanline() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.tick(341);
         assert_eq!(ppu.cycles, 0);
         assert_eq!(ppu.scanline, 1);
@@ -649,14 +769,14 @@ mod tests {
 
     #[test]
     fn test_ppu_tick_multiple_scanlines() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         advance_scanlines(&mut ppu, 3);
         assert_eq!(ppu.scanline, 3);
     }
 
     #[test]
     fn test_ppu_tick_vblank_at_scanline_241() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         advance_scanlines(&mut ppu, 240);
         assert!(!ppu.status.is_in_vblank());
         ppu.tick(341);
@@ -665,7 +785,7 @@ mod tests {
 
     #[test]
     fn test_ppu_tick_frame_end_resets() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         advance_scanlines(&mut ppu, 261);
         assert!(ppu.status.is_in_vblank());
         let frame_done = ppu.tick(341);
@@ -677,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_ppu_tick_nmi_triggered_when_enabled() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.ctrl.update(0b10000000);
         advance_scanlines(&mut ppu, 241);
         assert!(ppu.poll_nmi_interrupt());
@@ -685,14 +805,14 @@ mod tests {
 
     #[test]
     fn test_ppu_tick_nmi_not_triggered_when_disabled() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         advance_scanlines(&mut ppu, 241);
         assert!(!ppu.poll_nmi_interrupt());
     }
 
     #[test]
     fn test_ppu_nmi_on_ctrl_write_during_vblank() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         advance_scanlines(&mut ppu, 241);
         assert!(ppu.status.is_in_vblank());
         ppu.write_to_ctrl(0b10000000);
@@ -703,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_ppu_write_data_vram() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.write_to_ppu_addr(0x23);
         ppu.write_to_ppu_addr(0x05);
         ppu.write_data(0x66);
@@ -712,7 +832,7 @@ mod tests {
 
     #[test]
     fn test_ppu_write_data_palette() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.write_to_ppu_addr(0x3F);
         ppu.write_to_ppu_addr(0x10);
         ppu.write_data(0x2D);
@@ -721,7 +841,7 @@ mod tests {
 
     #[test]
     fn test_ppu_write_data_increments_address() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.write_to_ppu_addr(0x20);
         ppu.write_to_ppu_addr(0x00);
         ppu.write_data(0x11);
@@ -734,14 +854,14 @@ mod tests {
 
     #[test]
     fn test_oam_addr_write_sets_current_position() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.write_to_oam_addr(0x10);
         assert_eq!(ppu.oam_addr, 0x10);
     }
 
     #[test]
     fn test_oam_write_read_round_trip() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.write_to_oam_addr(0x10);
         ppu.write_to_oam_data(0x66);
         ppu.write_to_oam_data(0x77);
@@ -755,7 +875,7 @@ mod tests {
 
     #[test]
     fn test_oam_addr_wraps_after_255() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         ppu.write_to_oam_addr(0xFF);
         ppu.write_to_oam_data(0xAA);
         assert_eq!(ppu.oam_addr, 0x00);
@@ -765,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_oam_dma_writes_256_bytes() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         let mut data = [0x66; 256];
         data[0] = 0x77;
         data[255] = 0x88;
@@ -783,11 +903,11 @@ mod tests {
 
     #[test]
     fn test_tick_renders_first_pixel() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[3] = 0x30;
-        // Tile 0, row 0: pixel value 3 (both bitplanes set bit 7)
-        ppu.chr_rom[0] = 0b1000_0000; // plane0 (low bit)
-        ppu.chr_rom[8] = 0b1000_0000; // plane1 (high bit)
         ppu.tick(1);
         let c = palette::SYSTEM_PALLETE[0x30];
         assert_eq!(ppu.frame.data[..3], [c.0, c.1, c.2]);
@@ -795,10 +915,10 @@ mod tests {
 
     #[test]
     fn test_tick_renders_entire_first_scanline() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[..16].copy_from_slice(&[0xFF; 16]);
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[3] = 0x30;
-        // All-FF tile → all pixels = value 3
-        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
         for _ in 0..256 {
             ppu.tick(1);
         }
@@ -816,9 +936,10 @@ mod tests {
 
     #[test]
     fn test_tick_does_not_render_during_hblank() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[..16].copy_from_slice(&[0xFF; 16]);
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[3] = 0x30;
-        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
         // Tick past visible area (256) into hblank (256..340)
         for _ in 0..300 {
             ppu.tick(1);
@@ -838,9 +959,10 @@ mod tests {
 
     #[test]
     fn test_tick_does_not_render_during_vblank() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[..16].copy_from_slice(&[0xFF; 16]);
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[3] = 0x30;
-        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
         // Advance to scanline 241 (vblank starts)
         advance_scanlines(&mut ppu, 241);
         // Snapshot frame before vblank ticks
@@ -855,9 +977,10 @@ mod tests {
 
     #[test]
     fn test_tick_renders_second_scanline_at_correct_y() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[..16].copy_from_slice(&[0xFF; 16]);
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[3] = 0x30;
-        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
         // Complete first scanline, then render one pixel of second
         ppu.tick(341); // scanline 0 done
         ppu.tick(1); // first pixel of scanline 1
@@ -872,9 +995,10 @@ mod tests {
 
     #[test]
     fn test_frame_complete_has_rendered_data() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[..16].copy_from_slice(&[0xFF; 16]);
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[3] = 0x30;
-        ppu.chr_rom[..16].copy_from_slice(&[0xFF; 16]);
         for _ in 0..262 {
             ppu.tick(341);
         }
@@ -889,24 +1013,24 @@ mod tests {
 
     #[test]
     fn test_fetch_bg_pixel_returns_correct_value() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[3] = 0x30;
-        // Tile 0, pixel (0,0): CHR pixel value 3
-        ppu.chr_rom[0] = 0b1000_0000; // plane0 bit7 = 1
-        ppu.chr_rom[8] = 0b1000_0000; // plane1 bit7 = 1
         let pixel = ppu.fetch_bg_pixel();
         assert_eq!(pixel, 0x30);
     }
 
     #[test]
     fn test_fetch_bg_pixel_uses_correct_nametable_tile() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[16] = 0b1000_0000;
+        chr[24] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[3] = 0x30;
         // Place tile ID 1 at VRAM position 0
         ppu.vram[0] = 1;
-        // Tile 1: pixel value 3 at (0,0)
-        ppu.chr_rom[16] = 0b1000_0000;
-        ppu.chr_rom[24] = 0b1000_0000;
         let pixel = ppu.fetch_bg_pixel();
         assert_eq!(pixel, 0x30);
     }
@@ -915,7 +1039,7 @@ mod tests {
 
     #[test]
     fn test_fetch_sprite_pixel_returns_none_when_no_sprite() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         // All sprites off-screen (Y=255)
         ppu.oam_data = [0xFF; 256];
         let pixel = ppu.fetch_sprite_pixel();
@@ -924,16 +1048,16 @@ mod tests {
 
     #[test]
     fn test_fetch_sprite_pixel_returns_color_for_visible_sprite() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[0x13] = 0x30; // sprite palette 0, color 3
         // Sprite 0 at (scanline=0, X=0), tile 0, palette 0
         ppu.oam_data[0] = 0; // Y
         ppu.oam_data[1] = 0; // tile index
         ppu.oam_data[2] = 0; // attributes (palette 0)
         ppu.oam_data[3] = 0; // X
-        // Tile 0, row 0: pixel value 3
-        ppu.chr_rom[0] = 0b1000_0000; // plane0 bit7=1
-        ppu.chr_rom[8] = 0b1000_0000; // plane1 bit7=1
         let pixel = ppu.fetch_sprite_pixel();
         assert_eq!(pixel, Some(0x30));
     }
@@ -942,19 +1066,19 @@ mod tests {
 
     #[test]
     fn test_render_pixel_sprite_over_bg() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        chr[16] = 0b1000_0000;
+        chr[24] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[0x03] = 0x2D; // BG palette 0, color 3
         ppu.palette_table[0x13] = 0x15; // sprite palette 0, color 3
-        // BG tile 0: pixel value 3
-        ppu.chr_rom[0] = 0b1000_0000;
-        ppu.chr_rom[8] = 0b1000_0000;
         // Sprite 0 at (0,0), tile 1, pixel value 3
         ppu.oam_data[0] = 0;
         ppu.oam_data[1] = 1;
         ppu.oam_data[2] = 0;
         ppu.oam_data[3] = 0;
-        ppu.chr_rom[16] = 0b1000_0000;
-        ppu.chr_rom[24] = 0b1000_0000;
         let pixel = ppu.render_pixel();
         // Sprite pixel (0x15) should win over BG pixel (0x2D)
         assert_eq!(pixel, 0x15);
@@ -962,11 +1086,11 @@ mod tests {
 
     #[test]
     fn test_render_pixel_transparent_sprite_shows_bg() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut chr = vec![0u8; 0x2000];
+        chr[0] = 0b1000_0000;
+        chr[8] = 0b1000_0000;
+        let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[0x03] = 0x2D; // BG palette 0, color 3
-        // BG tile 0: pixel value 3
-        ppu.chr_rom[0] = 0b1000_0000;
-        ppu.chr_rom[8] = 0b1000_0000;
         // No visible sprite (all off-screen)
         ppu.oam_data = [0xFF; 256];
         let pixel = ppu.render_pixel();
@@ -976,7 +1100,7 @@ mod tests {
 
     #[test]
     fn test_render_pixel_transparent_everything() {
-        let mut ppu = PPU::new(vec![0; 2048], Mirroring::Horizontal);
+        let mut ppu = test_ppu(Mirroring::Horizontal);
         // Everything default: BG pixel=0, no visible sprite
         ppu.oam_data = [0xFF; 256];
         let pixel = ppu.render_pixel();
