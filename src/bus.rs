@@ -132,6 +132,7 @@ impl Mem for Bus {
                 }
 
                 self.ppu.write_oam_dma(&buffer);
+                self.tick(513);
             }
             APU..=APU_END => {
                 // ignore APU

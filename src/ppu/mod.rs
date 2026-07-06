@@ -234,7 +234,7 @@ impl PPU {
                 // VBlank phase
                 if self.scanline == 241 {
                     self.status.set_vblank_status(true);
-                    self.status.set_sprite_zero_hit(false);
+                    // self.status.set_sprite_zero_hit(false);
                     if self.ctrl.generate_vblank_nmi() {
                         self.nmi = true;
                     }
@@ -254,25 +254,25 @@ impl PPU {
     }
 
     fn render_pixel(&mut self) -> u8 {
-        let bg = self.fetch_bg_pixel();
+        let (bg_color, bg_transparent) = self.fetch_bg_pixel();
 
         // Sprite zero hit check
-        if self.is_sprite_zero_hit(bg) {
+        if self.is_sprite_zero_hit(bg_transparent) {
             self.status.set_sprite_zero_hit(true);
         }
 
         // Draw sprite
-        if let Some(s) = self.fetch_sprite_pixel() {
-            if s != 0 {
+        if let (Some(s), prioritize) = self.fetch_sprite_pixel() {
+            if s != 0 && (prioritize || bg_transparent) {
                 return s;
             }
         }
 
-        bg // No sprite or transparent sprite -> bg
+        bg_color // No sprite or transparent sprite -> bg
     }
 
     /// Fetches the sprite-pixel for the currently rendering pixel
-    fn fetch_sprite_pixel(&self) -> Option<u8> {
+    fn fetch_sprite_pixel(&self) -> (Option<u8>, bool) {
         for i in (0..64).rev() {
             // find sprite (highest wins)
             let oam = &self.oam_data[(i * 4)..(i * 4 + 4)];
@@ -281,10 +281,12 @@ impl PPU {
             let attr = oam[2] as u16;
             let x = oam[3] as u16;
 
-            let dy = self.scanline.wrapping_sub(y);
+            let prioritize = (attr >> 5) & 1 != 1; // 1 = behind background
+
+            let dy = self.scanline.wrapping_sub(y + 1);
             let dx = self.cycles.wrapping_sub(x);
             if dy < 8 && dx < 8 {
-                let mut fy = self.scanline - y;
+                let mut fy = self.scanline - (y + 1);
                 let mut fx = self.cycles - x;
 
                 if attr & 0x80 != 0 {
@@ -311,16 +313,16 @@ impl PPU {
                         3 => self.palette_table[start + 2],
                         _ => unreachable!(),
                     };
-                    return Some(color);
+                    return (Some(color), prioritize);
                 }
             }
         }
 
-        None
+        (None, false)
     }
 
     /// Fetches the background-pixel for the currently rendering pixel
-    fn fetch_bg_pixel(&self) -> u8 {
+    fn fetch_bg_pixel(&self) -> (u8, bool) {
         // Pixel position
         let nx = self.scroll.scroll_x as u32 + self.cycles as u32; // absolute pixel position
         let ny = self.scroll.scroll_y as u32 + self.scanline as u32;
@@ -363,13 +365,15 @@ impl PPU {
 
         // palette lookup
         let start = 1 + (palette_idx as usize) * 4;
-        match pixel {
+        let color = match pixel {
             0 => self.palette_table[0],
             1 => self.palette_table[start],
             2 => self.palette_table[start + 1],
             3 => self.palette_table[start + 2],
             _ => unreachable!(),
-        }
+        };
+
+        (color, pixel == 0)
     }
 
     fn resolve_tile_addr(&self, tile_col: u16, tile_row: u16) -> u16 {
@@ -417,7 +421,7 @@ impl PPU {
     }
 
     /// Check if the current pixel is a sprite-zero-hit
-    fn is_sprite_zero_hit(&self, bg: u8) -> bool {
+    fn is_sprite_zero_hit(&self, bg_transparent: bool) -> bool {
         // No hit it if sprite or background rendering is disabled
         if !(self.mask.show_sprites() && self.mask.show_background()) {
             return false;
@@ -426,10 +430,10 @@ impl PPU {
         if self.status.is_sprite_zero_hit() {
             return false;
         }
-        // No hit if background is transparent
-        if bg == 0 {
-            return false;
-        };
+        // // No hit if background is transparent
+        // if bg_transparent {
+        //     return false;
+        // };
 
         // Extract sprite zero information
         let (s0_y, s0_tile, s0_attr, s0_x) = (
@@ -440,7 +444,7 @@ impl PPU {
         );
 
         // Check if current pixel is inside 8x8 sprite
-        let dy = self.scanline.wrapping_sub(s0_y as u16);
+        let dy = self.scanline.wrapping_sub(s0_y as u16 + 1);
         let dx = self.cycles.wrapping_sub(s0_x as u16);
         if dy >= 8 || dx >= 8 {
             return false;
@@ -1028,7 +1032,7 @@ mod tests {
         chr[8] = 0b1000_0000;
         let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[3] = 0x30;
-        let pixel = ppu.fetch_bg_pixel();
+        let (pixel, _) = ppu.fetch_bg_pixel();
         assert_eq!(pixel, 0x30);
     }
 
@@ -1041,7 +1045,7 @@ mod tests {
         ppu.palette_table[3] = 0x30;
         // Place tile ID 1 at VRAM position 0
         ppu.vram[0] = 1;
-        let pixel = ppu.fetch_bg_pixel();
+        let (pixel, _) = ppu.fetch_bg_pixel();
         assert_eq!(pixel, 0x30);
     }
 
@@ -1052,7 +1056,7 @@ mod tests {
         let mut ppu = test_ppu(Mirroring::Horizontal);
         // All sprites off-screen (Y=255)
         ppu.oam_data = [0xFF; 256];
-        let pixel = ppu.fetch_sprite_pixel();
+        let (pixel, _) = ppu.fetch_sprite_pixel();
         assert_eq!(pixel, None);
     }
 
@@ -1063,12 +1067,13 @@ mod tests {
         chr[8] = 0b1000_0000;
         let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[0x13] = 0x30; // sprite palette 0, color 3
-        // Sprite 0 at (scanline=0, X=0), tile 0, palette 0
-        ppu.oam_data[0] = 0; // Y
+        // Sprite 0 at scanline 1 (Y=0 + 1 = scanline 1), X=0, tile 0, palette 0
+        ppu.oam_data[0] = 0; // Y=0 → sprite visible at scanline 1
         ppu.oam_data[1] = 0; // tile index
         ppu.oam_data[2] = 0; // attributes (palette 0)
         ppu.oam_data[3] = 0; // X
-        let pixel = ppu.fetch_sprite_pixel();
+        ppu.scanline = 1;
+        let (pixel, _) = ppu.fetch_sprite_pixel();
         assert_eq!(pixel, Some(0x30));
     }
 
@@ -1084,11 +1089,12 @@ mod tests {
         let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.palette_table[0x03] = 0x2D; // BG palette 0, color 3
         ppu.palette_table[0x13] = 0x15; // sprite palette 0, color 3
-        // Sprite 0 at (0,0), tile 1, pixel value 3
-        ppu.oam_data[0] = 0;
+        // Sprite 0 at scanline 1 (Y=0 + 1 = scanline 1), tile 1, pixel value 3
+        ppu.oam_data[0] = 0; // Y=0 → sprite visible at scanline 1
         ppu.oam_data[1] = 1;
         ppu.oam_data[2] = 0;
         ppu.oam_data[3] = 0;
+        ppu.scanline = 1;
         let pixel = ppu.render_pixel();
         // Sprite pixel (0x15) should win over BG pixel (0x2D)
         assert_eq!(pixel, 0x15);
@@ -1126,13 +1132,13 @@ mod tests {
         chr[8] = 0b1000_0000;
         let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.mask.update(0b0001_1000);
-        ppu.scanline = 20;
+        ppu.scanline = 21; // Y=20 → sprite visible at scanline 21
         ppu.cycles = 10;
         ppu.oam_data[0] = 20; // Y
         ppu.oam_data[1] = 0; // tile
         ppu.oam_data[2] = 0; // attr
         ppu.oam_data[3] = 10; // X
-        assert!(ppu.is_sprite_zero_hit(1));
+        assert!(ppu.is_sprite_zero_hit(false));
     }
 
     #[test]
@@ -1148,7 +1154,7 @@ mod tests {
         ppu.oam_data[2] = 0;
         ppu.oam_data[3] = 10;
         // mask defaults to 0 = rendering disabled
-        assert!(!ppu.is_sprite_zero_hit(1));
+        assert!(!ppu.is_sprite_zero_hit(true));
     }
 
     #[test]
@@ -1165,7 +1171,7 @@ mod tests {
         ppu.oam_data[2] = 0;
         ppu.oam_data[3] = 10;
         ppu.status.set_sprite_zero_hit(true);
-        assert!(!ppu.is_sprite_zero_hit(1));
+        assert!(!ppu.is_sprite_zero_hit(false));
     }
 
     #[test]
@@ -1181,7 +1187,7 @@ mod tests {
         ppu.oam_data[1] = 0;
         ppu.oam_data[2] = 0;
         ppu.oam_data[3] = 10;
-        assert!(!ppu.is_sprite_zero_hit(0));
+        assert!(!ppu.is_sprite_zero_hit(true));
     }
 
     #[test]
@@ -1198,7 +1204,7 @@ mod tests {
         ppu.oam_data[2] = 0;
         ppu.oam_data[3] = 10;
         // dy=30 >= 8, dx=40 >= 8
-        assert!(!ppu.is_sprite_zero_hit(1));
+        assert!(!ppu.is_sprite_zero_hit(false));
     }
 
     #[test]
@@ -1212,18 +1218,20 @@ mod tests {
         ppu.oam_data[1] = 0;
         ppu.oam_data[2] = 0;
         ppu.oam_data[3] = 10;
-        assert!(!ppu.is_sprite_zero_hit(1));
+        assert!(!ppu.is_sprite_zero_hit(false));
     }
 
     #[test]
     fn test_sprite_zero_hit_via_render_pixel_sets_status_flag() {
         let mut chr = vec![0u8; 0x2000];
-        chr[0] = 0b1000_0000;
-        chr[8] = 0b1000_0000;
+        chr[0] = 0b1000_0000; // tile 0, low plane, row 0 (sprite fy=0)
+        chr[8] = 0b1000_0000; // tile 0, high plane, row 0
+        chr[1] = 0b1000_0000; // tile 0, low plane, row 1 (BG fy=1)
+        chr[9] = 0b1000_0000; // tile 0, high plane, row 1
         let mut ppu = ppu_with_chr(chr, Mirroring::Horizontal);
         ppu.mask.update(0b0001_1000);
         ppu.palette_table[3] = 0x2D; // BG palette 0, color 3 (non-zero)
-        ppu.scanline = 0;
+        ppu.scanline = 1;
         ppu.cycles = 0;
         ppu.oam_data[0] = 0; // Y
         ppu.oam_data[1] = 0; // tile 0
