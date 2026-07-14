@@ -8,7 +8,7 @@ It's not finished yet (missing APU, mappers etc.), but it's able to run simple g
 
 ## Setup
 
-1. Install cargo & SDL2
+1. Install cargo & SDL2 (statically compiled by default, requires a C compiler)
 2. Get the file path to your rom
 3. Use `ROM_PATH=path_to_your_rom cargo run --release` for an optimized build
 
